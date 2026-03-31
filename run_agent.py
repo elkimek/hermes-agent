@@ -845,6 +845,7 @@ class AIAgent:
         # access for Codex Responses API streaming.
         self._anthropic_client = None
         self._is_anthropic_oauth = False
+        self._venice_e2ee_session = None  # Venice E2EE session (lazy init)
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -4755,6 +4756,16 @@ class AIAgent:
                     continue
 
                 delta = chunk.choices[0].delta
+
+                # Venice E2EE: decrypt content and reasoning in-place
+                if self._venice_e2ee_session is not None and delta:
+                    from agent.venice_e2ee_adapter import decrypt_delta
+                    if delta.content:
+                        delta.content = decrypt_delta(self._venice_e2ee_session, delta.content)
+                    _e2ee_r = getattr(delta, "reasoning_content", None)
+                    if _e2ee_r:
+                        delta.reasoning_content = decrypt_delta(self._venice_e2ee_session, _e2ee_r)
+
                 if hasattr(chunk, "model") and chunk.model:
                     model_name = chunk.model
 
@@ -5965,6 +5976,16 @@ class AIAgent:
         # Applied last so overrides win over any defaults set above.
         if self.request_overrides:
             api_kwargs.update(self.request_overrides)
+
+        # Venice E2EE: encrypt messages for e2ee-* models
+        if self.model and self.model.startswith("e2ee-"):
+            from agent.venice_e2ee_adapter import encrypt_api_kwargs, get_or_create_session
+            _e2ee_api_key = self._client_kwargs.get("api_key", "")
+            _e2ee_base_url = str(self._client_kwargs.get("base_url", ""))
+            self._venice_e2ee_session = get_or_create_session(
+                _e2ee_api_key, _e2ee_base_url, self.model, self._venice_e2ee_session
+            )
+            api_kwargs = encrypt_api_kwargs(self._venice_e2ee_session, api_kwargs)
 
         return api_kwargs
 
