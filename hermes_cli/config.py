@@ -138,6 +138,7 @@ def ensure_hermes_home():
 DEFAULT_CONFIG = {
     "model": "anthropic/claude-opus-4.6",
     "fallback_providers": [],
+    "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
@@ -441,7 +442,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 10,
+    "_config_version": 11,
 }
 
 # =============================================================================
