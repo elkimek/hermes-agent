@@ -266,6 +266,11 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_event_callback(self._on_room_message_media, nio.RoomMessageAudio)
         client.add_event_callback(self._on_room_message_media, nio.RoomMessageVideo)
         client.add_event_callback(self._on_room_message_media, nio.RoomMessageFile)
+        # Encrypted media events (E2EE rooms where the file data is encrypted).
+        client.add_event_callback(self._on_room_message_media, nio.RoomEncryptedImage)
+        client.add_event_callback(self._on_room_message_media, nio.RoomEncryptedAudio)
+        client.add_event_callback(self._on_room_message_media, nio.RoomEncryptedVideo)
+        client.add_event_callback(self._on_room_message_media, nio.RoomEncryptedFile)
         client.add_event_callback(self._on_invite, nio.InviteMemberEvent)
 
         # If E2EE: handle encrypted events.
@@ -983,10 +988,10 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_type = MessageType.DOCUMENT
         is_voice_message = False
         
-        if isinstance(event, nio.RoomMessageImage):
+        if isinstance(event, (nio.RoomMessageImage, nio.RoomEncryptedImage)):
             msg_type = MessageType.PHOTO
             media_type = event_mimetype or "image/png"
-        elif isinstance(event, nio.RoomMessageAudio):
+        elif isinstance(event, (nio.RoomMessageAudio, nio.RoomEncryptedAudio)):
             # Check for MSC3245 voice flag: org.matrix.msc3245.voice: {}
             source_content = getattr(event, "source", {}).get("content", {})
             if source_content.get("org.matrix.msc3245.voice") is not None:
@@ -995,7 +1000,7 @@ class MatrixAdapter(BasePlatformAdapter):
             else:
                 msg_type = MessageType.AUDIO
             media_type = event_mimetype or "audio/ogg"
-        elif isinstance(event, nio.RoomMessageVideo):
+        elif isinstance(event, (nio.RoomMessageVideo, nio.RoomEncryptedVideo)):
             msg_type = MessageType.VIDEO
             media_type = event_mimetype or "video/mp4"
         elif event_mimetype:
@@ -1013,8 +1018,18 @@ class MatrixAdapter(BasePlatformAdapter):
                 ext = ext_map.get(event_mimetype, ".jpg")
                 download_resp = await self._client.download(url)
                 if isinstance(download_resp, nio.DownloadResponse):
+                    image_data = download_resp.body
+                    # Decrypt attachment data for encrypted media events.
+                    if hasattr(event, "key") and hasattr(event, "hashes") and hasattr(event, "iv"):
+                        from nio.crypto import decrypt_attachment
+                        image_data = decrypt_attachment(
+                            image_data,
+                            event.key.get("k", ""),
+                            event.hashes.get("sha256", ""),
+                            event.iv,
+                        )
                     from gateway.platforms.base import cache_image_from_bytes
-                    cached_path = cache_image_from_bytes(download_resp.body, ext=ext)
+                    cached_path = cache_image_from_bytes(image_data, ext=ext)
                     logger.info("[Matrix] Cached user image at %s", cached_path)
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache image: %s", e)
