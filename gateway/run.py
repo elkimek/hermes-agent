@@ -4537,12 +4537,22 @@ class GatewayRunner:
             )
 
     async def _handle_nodes_command(self, event: MessageEvent) -> str:
-        """Handle /nodes — discover and list Routstr nodes."""
+        """Handle /nodes — discover, list, and connect to Routstr nodes.
+
+        Usage:
+            /nodes              — list online nodes
+            /nodes refresh      — re-scan Nostr relays
+            /nodes connect <n>  — connect to node #n and deposit wallet funds
+        """
         args = event.get_command_args().strip()
+
+        # /nodes connect <number> — select node + deposit
+        if args.startswith("connect"):
+            return await self._handle_nodes_connect(args)
 
         try:
             from hermes_cli.routstr.nostr_discovery import discover_nodes
-            nodes = await discover_nodes(force_refresh=bool(args == "refresh"))
+            nodes = await discover_nodes(force_refresh=(args == "refresh"))
         except Exception as e:
             return f"Failed to discover nodes: {e}"
 
@@ -4554,10 +4564,10 @@ class GatewayRunner:
 
         lines = ["🌐 **Routstr Nodes**", ""]
         if online:
-            for n in online:
+            for i, n in enumerate(online):
                 url = n["urls"][0] if n["urls"] else "?"
                 marker = " ← active" if current_node and current_node.rstrip("/") == url.rstrip("/") else ""
-                lines.append(f"✅ `{n['name']}` ({url}) — {n.get('model_count', '?')} models{marker}")
+                lines.append(f"**{i + 1}.** ✅ `{n['name']}` ({url}) — {n.get('model_count', '?')} models{marker}")
         if offline:
             for n in offline[:3]:
                 lines.append(f"❌ `{n['name']}` — offline")
@@ -4566,8 +4576,112 @@ class GatewayRunner:
             lines.append("No nodes found. Try `/nodes refresh`.")
 
         lines.append("")
+        lines.append("`/nodes connect 1` — connect + deposit to node")
         lines.append("`/nodes refresh` — re-scan relays")
         return "\n".join(lines)
+
+    async def _handle_nodes_connect(self, args: str) -> str:
+        """Connect to a node: check mint compat, deposit wallet funds, save key."""
+        from hermes_cli.config import get_env_value, save_env_value
+
+        # Parse node number
+        parts = args.split()
+        if len(parts) < 2:
+            return "Usage: `/nodes connect <number>` (e.g. `/nodes connect 1`)"
+        try:
+            idx = int(parts[1]) - 1
+        except ValueError:
+            return f"Invalid node number: `{parts[1]}`"
+
+        # Get cached nodes
+        try:
+            from hermes_cli.routstr.nostr_discovery import discover_nodes
+            nodes = await discover_nodes()
+            online = [n for n in nodes if n.get("online")]
+        except Exception as e:
+            return f"Failed to discover nodes: {e}"
+
+        if idx < 0 or idx >= len(online):
+            return f"Node {idx + 1} not found. Run `/nodes` to see available nodes."
+
+        node = online[idx]
+        node_url = node["urls"][0] if node["urls"] else ""
+        if not node_url:
+            return f"Node `{node['name']}` has no reachable URL."
+
+        # Load wallet
+        try:
+            from hermes_cli.routstr.wallet import CashuWallet
+            wallet = CashuWallet()
+            if not wallet.load():
+                return f"No wallet found. Use `/topup [sats]` to create and fund one first."
+            if not wallet.active_keyset_id:
+                await wallet.load_mint()
+        except Exception as e:
+            return f"Failed to load wallet: {e}"
+
+        balance = wallet.get_balance()
+        if balance == 0:
+            return f"Wallet is empty. Use `/topup [sats]` to fund it first."
+
+        # Check mint compatibility
+        try:
+            from hermes_cli.routstr.node_api import get_accepted_mints
+            accepted = await get_accepted_mints(node_url)
+            if accepted and wallet.mint_url not in accepted:
+                mint_list = "\n".join(f"  `{m}`" for m in accepted)
+                return (
+                    f"⚠️ Node `{node['name']}` doesn't accept mint `{wallet.mint_url}`\n\n"
+                    f"**Accepted mints:**\n{mint_list}\n\n"
+                    f"Switch mint first: `/wallet mint {accepted[0]}`\n"
+                    f"Then fund: `/topup [sats]`\n"
+                    f"Then connect: `/nodes connect {idx + 1}`"
+                )
+        except Exception:
+            pass  # Can't check — try anyway
+
+        # Deposit
+        try:
+            from hermes_cli.routstr.token import encode_token
+            from hermes_cli.routstr.node_api import create_account, topup_cashu, get_balance
+
+            token = encode_token(wallet.mint_url, wallet.proofs)
+            wallet.proofs = []
+            wallet.save()
+
+            existing_key = get_env_value("ROUTSTR_API_KEY") or os.getenv("ROUTSTR_API_KEY", "")
+            if existing_key:
+                result = await topup_cashu(node_url, existing_key, token)
+            else:
+                result = await create_account(node_url, token)
+                existing_key = result.get("api_key", "")
+
+            if existing_key:
+                save_env_value("ROUTSTR_API_KEY", existing_key)
+            save_env_value("ROUTSTR_NODE_URL", node_url)
+
+            # Get new balance
+            bal = await get_balance(node_url, existing_key)
+
+            lines = [
+                f"✅ **Connected to {node['name']}!**",
+                "",
+                f"Deposited {balance} sats",
+                f"**Node balance:** {bal['sats']} sats",
+                f"**API Key:** `{existing_key}`",
+                f"**Models:** {node.get('model_count', '?')}",
+                "",
+                "`/balance` — check balance | `/model` — switch model",
+            ]
+            return "\n".join(lines)
+
+        except Exception as e:
+            # Recovery
+            try:
+                wallet.import_token(token)
+                return f"❌ Deposit failed: {e}\n\nTokens recovered to wallet ({wallet.get_balance()} sats)."
+            except Exception:
+                return f"❌ Deposit failed: {e}\n\n⚠️ Recovery token: `{token[:60]}...`"
 
     async def _handle_wallet_command(self, event: MessageEvent) -> str:
         """Handle /wallet — show Cashu wallet info or change mint.
