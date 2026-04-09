@@ -23,6 +23,8 @@ async def create_account(
     if own:
         client = httpx.AsyncClient()
     try:
+        # NOTE: Routstr API requires GET with token in query param.
+        # This is their API design — POST is not supported for this endpoint.
         resp = await client.get(
             f"{node_url.rstrip('/')}/v1/balance/create",
             params={"initial_balance_token": cashu_token},
@@ -107,7 +109,7 @@ async def create_lightning_invoice(
         resp = await client.post(
             f"{node_url.rstrip('/')}/v1/balance/lightning/invoice",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"amount_sats": amount_sats, "purpose": "topup", "api_key": api_key},
+            json={"amount_sats": amount_sats, "purpose": "topup"},
             timeout=15.0,
         )
         resp.raise_for_status()

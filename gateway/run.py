@@ -4528,6 +4528,13 @@ class GatewayRunner:
                     return
             except Exception:
                 pass
+        # Timeout — notify user
+        adapter = self.adapters.get(platform)
+        if adapter:
+            await adapter.send(
+                chat_id=chat_id,
+                content=f"⏰ Payment not detected after 3 minutes. Check `/balance` — if you paid, it may still arrive.",
+            )
 
     async def _handle_nodes_command(self, event: MessageEvent) -> str:
         """Handle /nodes — discover and list Routstr nodes."""
@@ -4578,9 +4585,7 @@ class GatewayRunner:
                 f"**Proofs:** {len(wallet.proofs)}",
             ]
 
-            from hermes_cli.config import get_env_value
-            mnemonic = get_env_value("ROUTSTR_WALLET_MNEMONIC")
-            lines.append(f"**Seed:** {'saved' if mnemonic else 'not saved'}")
+            lines.append(f"**Backup:** `~/.hermes/routstr/wallet.json`")
 
             lines.append("")
             lines.append("`/topup [sats]` — add funds | `/balance` — node balance")

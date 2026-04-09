@@ -2361,27 +2361,6 @@ def _model_flow_routstr(config, current_model=""):
                 print(f"  {e}")
                 return
 
-            # Generate mnemonic
-            try:
-                from mnemonic import Mnemonic
-                mnemo = Mnemonic("english")
-                seed_phrase = mnemo.generate(128)  # 12 words
-            except ImportError:
-                print("  mnemonic package not installed. Run: pip install mnemonic")
-                return
-
-            print()
-            print("  ⚠  Your wallet seed phrase (12 words):")
-            print(f"  {seed_phrase}")
-            print()
-            print("  Write this down and store it safely — it's the ONLY way to recover your wallet.")
-            print()
-            try:
-                input("  Press Enter when you've saved it...")
-            except (KeyboardInterrupt, EOFError):
-                print()
-                return
-
             # Fund wallet via Lightning
             from hermes_cli.routstr.wallet import CashuWallet
 
@@ -2474,8 +2453,8 @@ def _model_flow_routstr(config, current_model=""):
                 print(f" failed: {e}")
                 return
 
-            # Save mnemonic
-            save_env_value("ROUTSTR_WALLET_MNEMONIC", seed_phrase)
+            print()
+            print("  ⚠  Back up ~/.hermes/routstr/wallet.json — it contains your funds.")
             print()
 
             # ── Step 3: Node discovery + deposit ──

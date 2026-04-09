@@ -23,19 +23,19 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MINT = "https://mint.minibits.cash/Bitcoin"
 
-# Amount denominations for Cashu proofs (powers of 2)
-DENOMINATIONS = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
-
-
 def _split_amount(amount: int) -> list[int]:
     """Split an amount into powers of 2 (Cashu denomination).
 
-    Example: 13 → [1, 4, 8]
+    Example: 13 → [1, 4, 8], 50000 → [16, 32, 128, 16384, 32768]
+    Handles arbitrarily large amounts via binary decomposition.
     """
     bits = []
-    for d in DENOMINATIONS:
-        if amount & d:
-            bits.append(d)
+    b = 1
+    while amount > 0:
+        if amount & 1:
+            bits.append(b)
+        amount >>= 1
+        b <<= 1
     return bits
 
 
@@ -78,6 +78,10 @@ class CashuWallet:
             "proofs": self.proofs,
         }
         path.write_text(json.dumps(data, indent=2))
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
     def load(self) -> bool:
         """Load wallet state from disk. Returns True if file existed."""
@@ -309,7 +313,8 @@ class CashuWallet:
 
         if remaining == 0:
             # Exact match — no swap needed
-            keep_proofs = [p for p in self.proofs if p not in send_proofs]
+            send_secrets = {p["secret"] for p in send_proofs}
+            keep_proofs = [p for p in self.proofs if p["secret"] not in send_secrets]
             self.proofs = keep_proofs
             self.save()
             return keep_proofs, send_proofs
@@ -387,7 +392,8 @@ class CashuWallet:
             change_new = all_new_proofs[len(send_amounts):]
 
             # Update wallet: remove swapped proofs, add change
-            keep_proofs = [p for p in self.proofs if p not in swap_proofs]
+            swap_secrets = {p["secret"] for p in swap_proofs}
+            keep_proofs = [p for p in self.proofs if p["secret"] not in swap_secrets]
             keep_proofs.extend(change_new)
             self.proofs = keep_proofs
             self.save()
