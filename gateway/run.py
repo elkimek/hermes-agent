@@ -4860,16 +4860,16 @@ class GatewayRunner:
                     return (
                         "Usage: `/wallet send <sats> [v3|v4] [uri]`\n\n"
                         "**Examples:**\n"
-                        "`/wallet send 500` — cashuA token (V3, default)\n"
-                        "`/wallet send 500 v4` — cashuB token (V4, compact)\n"
-                        "`/wallet send 500 v3 uri` — cashu:cashuA... with URI prefix\n"
-                        "`/wallet send 500 v4 uri` — cashu:cashuB... with URI prefix"
+                        "`/wallet send 500` — cashuB token (V4, default)\n"
+                        "`/wallet send 500 v3` — cashuA token (V3, legacy)\n"
+                        "`/wallet send 500 uri` — cashu:cashuB... with URI prefix\n"
+                        "`/wallet send 500 v3 uri` — cashu:cashuA... with URI prefix"
                     )
                 try:
                     send_amount = int(parts[1])
                 except ValueError:
                     return f"Invalid amount: `{parts[1]}`"
-                version = "v4" if "v4" in parts[2:] else "v3"
+                version = "v3" if "v3" in parts[2:] else "v4"
                 uri_prefix = "uri" in parts[2:] or "cashu:" in parts[2:]
                 balance = wallet.get_balance()
                 if send_amount > balance:
