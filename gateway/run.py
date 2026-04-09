@@ -4776,6 +4776,25 @@ class GatewayRunner:
                     "This will query the mint for previously-minted proofs."
                 )
 
+            # /wallet receive <token> — redeem incoming Cashu token
+            if args.startswith("receive"):
+                token_str = args[7:].strip()
+                if not token_str:
+                    return "Usage: `/wallet receive cashuA...` or `/wallet receive cashu:cashuB...`"
+                try:
+                    from hermes_cli.routstr.token import strip_uri_prefix
+                    token_str = strip_uri_prefix(token_str)
+                    if not token_str.startswith("cashuA") and not token_str.startswith("cashuB"):
+                        return "Invalid token — must start with `cashuA`, `cashuB`, or `cashu:`"
+                    imported = wallet.import_token(token_str)
+                    amount = sum(p.get("amount", 0) for p in imported)
+                    return (
+                        f"✅ **Received {amount} sats!**\n\n"
+                        f"Wallet balance: {wallet.get_balance()} sats"
+                    )
+                except Exception as e:
+                    return f"Failed to import token: {e}"
+
             # /wallet send <sats> [v3|v4] [cashu:] — export as Cashu token
             if args.startswith("send"):
                 parts = args.split()
@@ -4936,6 +4955,7 @@ class GatewayRunner:
                 f"**Seed:** {'✅ set (recoverable)' if wallet.seed else '❌ not set'}",
                 "",
                 "`/wallet send <sats>` — export as Cashu token",
+                "`/wallet receive <token>` — redeem a Cashu token",
                 "`/wallet pay <invoice>` — pay Lightning invoice",
                 "`/wallet pay <sats> <user@domain>` — pay Lightning address",
                 "`/wallet mint` — show/change mint",
