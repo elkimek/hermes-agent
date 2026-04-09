@@ -4570,25 +4570,67 @@ class GatewayRunner:
         return "\n".join(lines)
 
     async def _handle_wallet_command(self, event: MessageEvent) -> str:
-        """Handle /wallet — show Cashu wallet info."""
+        """Handle /wallet — show Cashu wallet info or change mint.
+
+        Usage:
+            /wallet         — show wallet info
+            /wallet mint    — show current mint + node's accepted mints
+            /wallet mint <url> — switch to a different mint
+        """
+        args = event.get_command_args().strip()
         try:
             from hermes_cli.routstr.wallet import CashuWallet
             wallet = CashuWallet()
-            if not wallet.load():
+            wallet.load()
+
+            # /wallet mint <url> — change mint
+            if args.startswith("mint "):
+                new_mint = args[5:].strip().rstrip("/")
+                if not new_mint.startswith("https://"):
+                    return "Mint URL must start with `https://`"
+                try:
+                    await wallet.set_mint(new_mint)
+                    return f"✅ Mint changed to `{new_mint}`\n\n⚠️ Existing proofs stay tied to their original mint. New funding will use the new mint."
+                except Exception as e:
+                    return f"Failed to set mint: {e}"
+
+            # /wallet mint — show mint info + node's accepted mints
+            if args == "mint":
+                lines = [f"🏦 **Current mint:** `{wallet.mint_url}`", ""]
+                from hermes_cli.config import get_env_value
+                node_url = get_env_value("ROUTSTR_NODE_URL") or os.getenv("ROUTSTR_NODE_URL", "")
+                if node_url:
+                    try:
+                        from hermes_cli.routstr.node_api import get_accepted_mints
+                        accepted = await get_accepted_mints(node_url)
+                        if accepted:
+                            lines.append("**Node accepts:**")
+                            for m in accepted:
+                                marker = " ✅" if m == wallet.mint_url else ""
+                                lines.append(f"  `{m}`{marker}")
+                        else:
+                            lines.append("Node doesn't advertise accepted mints (any mint may work).")
+                    except Exception:
+                        lines.append("Could not fetch node mint info.")
+                lines.append("")
+                lines.append("Switch: `/wallet mint https://mint.example.com`")
+                return "\n".join(lines)
+
+            # /wallet — show info
+            if not wallet._loaded:
                 return "No Cashu wallet found. Use `/topup [sats]` to create one."
 
             lines = [
                 "🏦 **Cashu Wallet**",
                 "",
                 f"**Balance:** {wallet.get_balance()} sats",
-                f"**Mint:** {wallet.mint_url}",
+                f"**Mint:** `{wallet.mint_url}`",
                 f"**Proofs:** {len(wallet.proofs)}",
+                f"**Backup:** `~/.hermes/routstr/wallet.json`",
+                "",
+                "`/wallet mint` — show/change mint",
+                "`/topup [sats]` — add funds | `/balance` — node balance",
             ]
-
-            lines.append(f"**Backup:** `~/.hermes/routstr/wallet.json`")
-
-            lines.append("")
-            lines.append("`/topup [sats]` — add funds | `/balance` — node balance")
             return "\n".join(lines)
         except Exception as e:
             return f"Failed to load wallet: {e}"

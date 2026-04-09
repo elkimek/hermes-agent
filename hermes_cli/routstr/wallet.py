@@ -100,6 +100,29 @@ class CashuWallet:
             logger.warning("Failed to load wallet: %s", e)
             return False
 
+    async def set_mint(self, mint_url: str, client: Optional[httpx.AsyncClient] = None):
+        """Change the active mint. Validates it first, then loads keysets.
+
+        Existing proofs stay tied to their original keyset — they can only
+        be spent at the mint that issued them. New funding will use the new mint.
+        """
+        mint_url = mint_url.rstrip("/")
+        own = client is None
+        if own:
+            client = httpx.AsyncClient()
+        try:
+            resp = await client.get(f"{mint_url}/v1/info", timeout=5.0)
+            resp.raise_for_status()
+            info = resp.json()
+            if "nuts" not in info:
+                raise ValueError("Not a valid Cashu mint (no 'nuts' in /v1/info)")
+        finally:
+            if own:
+                await client.aclose()
+        self.mint_url = mint_url
+        await self.load_mint(client)
+        self.save()
+
     # ── Mint info ────────────────────────────────────────────────────────
 
     async def load_mint(self, client: Optional[httpx.AsyncClient] = None):

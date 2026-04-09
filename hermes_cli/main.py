@@ -2488,6 +2488,78 @@ def _model_flow_routstr(config, current_model=""):
 
             node_url = selected_node["urls"][0] if selected_node["urls"] else "https://api.routstr.com"
 
+            # Check mint compatibility
+            try:
+                from hermes_cli.routstr.node_api import get_accepted_mints
+                accepted = asyncio.run(get_accepted_mints(node_url))
+                if accepted and wallet.mint_url not in accepted:
+                    print(f"\n  Node doesn't accept mint {wallet.mint_url}")
+                    print(f"  Accepted mints:")
+                    for i, m in enumerate(accepted):
+                        print(f"    [{i + 1}] {m}")
+                    print(f"    [c] Enter custom mint URL")
+                    print()
+                    try:
+                        mpick = input(f"  Switch mint [1]: ").strip() or "1"
+                    except (KeyboardInterrupt, EOFError):
+                        print()
+                        return
+                    if mpick == "c":
+                        try:
+                            new_mint = input("  Mint URL: ").strip()
+                        except (KeyboardInterrupt, EOFError):
+                            print()
+                            return
+                    else:
+                        try:
+                            new_mint = accepted[int(mpick) - 1]
+                        except (ValueError, IndexError):
+                            new_mint = accepted[0]
+                    print(f"  Switching to {new_mint}...", end="", flush=True)
+                    asyncio.run(wallet.set_mint(new_mint))
+                    print(" done!")
+                    # Wallet proofs from old mint still exist but can't be spent at new mint.
+                    # User needs to fund again with the new mint.
+                    if wallet.get_balance() == 0:
+                        print("  Wallet empty — fund with the new mint before depositing.")
+                        print()
+                        # Re-trigger funding
+                        print("  Fund your wallet via Lightning:")
+                        print("    [1] 1,000 sats  [2] 5,000 sats  [3] 10,000 sats")
+                        try:
+                            fpick = input("  Choose amount [1]: ").strip() or "1"
+                        except (KeyboardInterrupt, EOFError):
+                            print()
+                            return
+                        amount_sats = [1000, 5000, 10000][int(fpick) - 1] if fpick in ("1","2","3") else 1000
+                        print(f"\n  Creating {amount_sats} sat invoice...", end="", flush=True)
+                        quote = asyncio.run(wallet.create_funding_invoice(amount_sats))
+                        bolt11 = quote.get("request", "")
+                        quote_id = quote.get("quote", "")
+                        print(" done!")
+                        print(f"\n  Lightning invoice:\n  {bolt11}\n")
+                        print("  Waiting for payment...", end="", flush=True)
+                        import time
+                        paid = False
+                        for _ in range(90):
+                            time.sleep(2)
+                            try:
+                                status = asyncio.run(wallet.check_funding_status(quote_id))
+                                if status.get("state", "").upper() in ("PAID", "ISSUED"):
+                                    paid = True
+                                    break
+                            except Exception:
+                                pass
+                            print(".", end="", flush=True)
+                        if not paid:
+                            print(" timed out.")
+                            return
+                        print(" paid!")
+                        asyncio.run(wallet.mint_tokens(amount_sats, quote_id))
+                        print(f"  Minted! Wallet: {wallet.get_balance()} sats")
+            except Exception as e:
+                logger.debug("Mint compat check failed: %s", e)
+
             # Deposit to node
             deposit_amount = wallet.get_balance()
             print(f"\n  Depositing {deposit_amount} sats to {selected_node['name']}...", end="", flush=True)

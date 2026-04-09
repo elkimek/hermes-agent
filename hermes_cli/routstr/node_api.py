@@ -143,6 +143,32 @@ async def check_invoice_status(
             await client.aclose()
 
 
+async def get_accepted_mints(
+    node_url: str, client: Optional[httpx.AsyncClient] = None
+) -> list[str]:
+    """Fetch the list of Cashu mints a node accepts.
+
+    Returns: list of mint URL strings, or empty list if not available.
+    """
+    own = client is None
+    if own:
+        client = httpx.AsyncClient()
+    try:
+        resp = await client.get(
+            f"{node_url.rstrip('/')}/v1/info",
+            timeout=5.0,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("mints", [])
+        return []
+    except Exception:
+        return []
+    finally:
+        if own:
+            await client.aclose()
+
+
 async def fetch_models(
     node_url: str, client: Optional[httpx.AsyncClient] = None
 ) -> list[str]:
