@@ -117,6 +117,20 @@ def _decode_v4(payload_str: str) -> dict[str, Any]:
     return {"mint": mint_url, "proofs": proofs, "unit": unit}
 
 
+def extract_token(text: str) -> str | None:
+    """Find and extract a Cashu token from anywhere in a string.
+
+    Handles Discord's message.txt injection, pasted text with prefixes, etc.
+    Returns the raw token string (cashuA... or cashuB...) or None.
+    """
+    import re
+    # Strip cashu: URI prefix if present
+    text = text.replace("cashu:", "")
+    # Find cashuA or cashuB followed by base64url chars
+    match = re.search(r'(cashu[AB][A-Za-z0-9_-]+={0,2})', text)
+    return match.group(1) if match else None
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------

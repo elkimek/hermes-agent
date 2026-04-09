@@ -4412,12 +4412,11 @@ class GatewayRunner:
                 "`/wallet` — wallet info"
             )
 
-        # Check if arg is a Cashu token instead of a number
+        # Check if arg contains a Cashu token (may be in Discord message.txt attachment)
+        from hermes_cli.routstr.token import extract_token as _extract_cashu
+        found_token = _extract_cashu(raw_args)
         first_arg = raw_args.split()[0] if raw_args else ""
-        token_arg = raw_args.strip()
-        if token_arg.startswith("cashu:"):
-            token_arg = token_arg[6:]
-        if token_arg.startswith("cashuA") or token_arg.startswith("cashuB"):
+        if found_token:
             # Cashu token topup — receive into wallet, auto-deposit to node
             try:
                 from hermes_cli.routstr.wallet import CashuWallet
@@ -4441,7 +4440,7 @@ class GatewayRunner:
                                     "`/wallet restore <12 words>` to recover."
                                 ),
                             )
-                imported = wallet.import_token(raw_args.strip())
+                imported = wallet.import_token(found_token)
                 amount = sum(p.get("amount", 0) for p in imported)
 
                 # Auto-deposit to node if connected
@@ -4836,14 +4835,14 @@ class GatewayRunner:
 
             # /wallet receive <token> — redeem incoming Cashu token
             if args.startswith("receive"):
-                token_str = args[7:].strip()
-                if not token_str:
-                    return "Usage: `/wallet receive cashuA...` or `/wallet receive cashu:cashuB...`"
+                raw_receive = args[7:].strip()
+                if not raw_receive:
+                    return "Usage: `/wallet receive cashuA...` or `/receive cashuA...`"
                 try:
-                    from hermes_cli.routstr.token import strip_uri_prefix
-                    token_str = strip_uri_prefix(token_str)
-                    if not token_str.startswith("cashuA") and not token_str.startswith("cashuB"):
-                        return "Invalid token — must start with `cashuA`, `cashuB`, or `cashu:`"
+                    from hermes_cli.routstr.token import extract_token
+                    token_str = extract_token(raw_receive)
+                    if not token_str:
+                        return "No valid Cashu token found. Must contain `cashuA...` or `cashuB...`"
                     imported = wallet.import_token(token_str)
                     amount = sum(p.get("amount", 0) for p in imported)
                     return (
@@ -5067,17 +5066,17 @@ class GatewayRunner:
 
     async def _handle_receive_command(self, event: MessageEvent) -> str:
         """Handle /receive <token> — redeem a Cashu token into wallet."""
-        token_str = event.get_command_args().strip()
-        if not token_str:
+        raw = event.get_command_args().strip()
+        if not raw:
             return "Usage: `/receive cashuA...` or `/receive cashu:cashuB...`"
 
         try:
-            from hermes_cli.routstr.token import strip_uri_prefix
+            from hermes_cli.routstr.token import extract_token
             from hermes_cli.routstr.wallet import CashuWallet
 
-            token_str = strip_uri_prefix(token_str)
-            if not token_str.startswith("cashuA") and not token_str.startswith("cashuB"):
-                return "Invalid token — must start with `cashuA`, `cashuB`, or `cashu:`"
+            token_str = extract_token(raw)
+            if not token_str:
+                return "No valid Cashu token found. Must contain `cashuA...` or `cashuB...`"
 
             wallet = CashuWallet()
             wallet.load()
