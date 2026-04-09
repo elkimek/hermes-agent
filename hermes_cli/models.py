@@ -256,6 +256,36 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2.5",
         "MiniMax-M2.5",
     ],
+    "ppq": [
+        "claude-opus-4.6",
+        "claude-sonnet-4.6",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-3-flash-preview",
+        "deepseek/deepseek-v3.2",
+        "x-ai/grok-4.1-fast",
+        "z-ai/glm-5",
+        "moonshotai/kimi-k2.5",
+        "minimax/minimax-m2.7",
+        "qwen/qwen3.5-397b-a17b",
+        "qwen/qwen3-coder-plus",
+    ],
+    "routstr": [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
+        "deepseek-v3.2",
+        "grok-4.1-fast",
+        "glm-5",
+        "kimi-k2.5",
+        "minimax-m27",
+        "qwen3.5-397b-a17b",
+        "qwen3-coder-480b-a35b-instruct",
+    ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B",
@@ -485,6 +515,8 @@ _PROVIDER_LABELS = {
     "alibaba": "Alibaba Cloud (DashScope)",
     "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
+    "ppq": "PPQ",
+    "routstr": "Routstr",
     "custom": "Custom endpoint",
 }
 
@@ -527,6 +559,9 @@ _PROVIDER_ALIASES = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+    "payperq": "ppq",
+    "pay-per-query": "ppq",
+    "ppq-ai": "ppq",
 }
 
 
@@ -1069,6 +1104,16 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
         live = _fetch_ai_gateway_models()
         if live:
             return live
+    if normalized in ("ppq", "routstr"):
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+            creds = resolve_api_key_provider_credentials(normalized)
+            if creds.get("api_key"):
+                live = fetch_api_models(creds["api_key"], creds["base_url"])
+                if live:
+                    return live
+        except Exception:
+            pass
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:

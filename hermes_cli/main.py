@@ -933,6 +933,8 @@ def select_provider_and_model(args=None):
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
+        "ppq": "PPQ",
+        "routstr": "Routstr",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active) if active else "none"
@@ -951,6 +953,8 @@ def select_provider_and_model(args=None):
         ("qwen-oauth", "Qwen OAuth (reuses local Qwen CLI login)"),
         ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
         ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
+        ("ppq", "PPQ (330+ models, pay-per-query, no account needed)"),
+        ("routstr", "Routstr (390+ models, Bitcoin eCash micropayments)"),
     ]
 
     extended_providers = [
@@ -1061,7 +1065,9 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider == "ppq":
+        _model_flow_ppq(config, current_model)
+    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "routstr"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -2253,6 +2259,141 @@ def _model_flow_kimi(config, current_model=""):
 
         endpoint_label = "Kimi Coding" if is_coding_plan else "Moonshot"
         print(f"Default model set to: {selected} (via {endpoint_label})")
+    else:
+        print("No change.")
+
+
+def _model_flow_ppq(config, current_model=""):
+    """PPQ flow with inline account creation — no browser needed."""
+    import json
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.models import fetch_api_models
+
+    pconfig = PROVIDER_REGISTRY["ppq"]
+    existing_key = get_env_value("PPQ_API_KEY") or os.getenv("PPQ_API_KEY", "")
+
+    if existing_key:
+        print(f"  PPQ API key: {existing_key[:8]}... ✓")
+        # Show balance
+        try:
+            import httpx
+            resp = httpx.post(
+                "https://api.ppq.ai/credits/balance",
+                headers={"Authorization": f"Bearer {existing_key}", "Content-Type": "application/json"},
+                json={}, timeout=5.0,
+            )
+            if resp.status_code == 200:
+                balance = resp.json().get("balance")
+                if balance is not None:
+                    print(f"  Balance: ${float(balance):.2f}")
+        except Exception:
+            pass
+        print()
+    else:
+        print("  No PPQ API key configured.")
+        print()
+        print("  PPQ is a pay-per-query AI aggregator. No email, no KYC.")
+        print("  You can create an account instantly or enter an existing key.")
+        print()
+        try:
+            choice = input("  [1] Create new account  [2] Enter existing key  [Enter] Cancel: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+
+        if choice == "1":
+            print("  Creating PPQ account...", end="", flush=True)
+            try:
+                import httpx
+                resp = httpx.post("https://api.ppq.ai/accounts/create", timeout=15.0)
+                resp.raise_for_status()
+                result = resp.json()
+                api_key = result.get("api_key", "")
+                credit_id = result.get("credit_id", "")
+                print(" done!")
+                print()
+                print(f"  API Key:   {api_key}")
+                print(f"  Credit ID: {credit_id}")
+                print()
+                print("  ⚠  Save both values now — PPQ accounts are anonymous,")
+                print("     there is no way to recover a lost key.")
+                print(f"     Enter the Credit ID at ppq.ai to access your account on the web.")
+                print()
+                save_env_value("PPQ_API_KEY", api_key)
+                existing_key = api_key
+                print("  API key saved to ~/.hermes/.env")
+                print("  Top up at: https://ppq.ai (min $0.10, Lightning/BTC/XMR/LTC)")
+            except Exception as e:
+                print(f" failed: {e}")
+                return
+        elif choice == "2":
+            try:
+                import getpass
+                new_key = getpass.getpass("  PPQ API key: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not new_key:
+                print("  Cancelled.")
+                return
+            save_env_value("PPQ_API_KEY", new_key)
+            existing_key = new_key
+            print("  API key saved.")
+        else:
+            print("  Cancelled.")
+            return
+        print()
+
+    # Model selection — delegate to the standard logic
+    effective_base = pconfig.inference_base_url
+    curated = _PROVIDER_MODELS.get("ppq", [])
+
+    mdev_models: list = []
+    try:
+        from agent.models_dev import list_agentic_models
+        mdev_models = list_agentic_models("ppq")
+    except Exception:
+        pass
+
+    if mdev_models:
+        model_list = mdev_models
+        print(f"  Found {len(model_list)} model(s) from models.dev registry")
+    elif curated and len(curated) >= 8:
+        model_list = curated
+        print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+    else:
+        live_models = fetch_api_models(existing_key, effective_base)
+        if live_models and len(live_models) >= len(curated):
+            model_list = live_models
+            print(f"  Found {len(model_list)} model(s) from PPQ API")
+        else:
+            model_list = curated
+
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        _save_model_choice(selected)
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "ppq"
+        model["base_url"] = effective_base
+        model.pop("api_mode", None)
+        save_config(cfg)
+        deactivate_provider()
+        print(f"Default model set to: {selected} (via PPQ)")
     else:
         print("No change.")
 
@@ -4294,7 +4435,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ppq", "routstr"],
         default=None,
         help="Inference provider (default: auto)"
     )

@@ -243,6 +243,22 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
+    "ppq": ProviderConfig(
+        id="ppq",
+        name="PPQ",
+        auth_type="api_key",
+        inference_base_url="https://api.ppq.ai/v1",
+        api_key_env_vars=("PPQ_API_KEY",),
+        base_url_env_var="PPQ_BASE_URL",
+    ),
+    "routstr": ProviderConfig(
+        id="routstr",
+        name="Routstr",
+        auth_type="api_key",
+        inference_base_url="https://api.routstr.com/v1",
+        api_key_env_vars=("ROUTSTR_API_KEY",),
+        base_url_env_var="ROUTSTR_BASE_URL",
+    ),
 }
 
 
