@@ -4836,6 +4836,8 @@ class GatewayRunner:
                     # Resolve Lightning address to bolt11
                     try:
                         import httpx
+                        # Strip common prefixes (₿, ⚡, lightning:, etc.)
+                        ln_address = ln_address.lstrip("₿⚡").removeprefix("lightning:")
                         user, domain = ln_address.split("@")
                         async with httpx.AsyncClient() as client:
                             resp = await client.get(
@@ -4852,7 +4854,7 @@ class GatewayRunner:
                             resp2.raise_for_status()
                             bolt11 = resp2.json().get("pr", "")
                     except Exception as e:
-                        return f"Failed to resolve Lightning address: {e}"
+                        return f"Failed to resolve Lightning address `{ln_address}` (https://{domain}/.well-known/lnurlp/{user}): {e}"
                 else:
                     return "Provide a Lightning invoice (`lnbc...`) or `<amount> <address>`"
 
