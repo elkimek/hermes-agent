@@ -2471,6 +2471,9 @@ class GatewayRunner:
         if canonical == "wallet":
             return await self._handle_wallet_command(event)
 
+        if canonical == "withdraw":
+            return await self._handle_withdraw_command(event)
+
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
@@ -4581,17 +4584,29 @@ class GatewayRunner:
         return "\n".join(lines)
 
     async def _handle_nodes_connect(self, args: str) -> str:
-        """Connect to a node: check mint compat, deposit wallet funds, save key."""
+        """Connect to a node: check mint compat, deposit wallet funds, save key.
+
+        Usage:
+            /nodes connect 1        — deposit ALL wallet sats to node #1
+            /nodes connect 1 500    — deposit 500 sats to node #1
+        """
         from hermes_cli.config import get_env_value, save_env_value
 
-        # Parse node number
+        # Parse node number and optional amount
         parts = args.split()
         if len(parts) < 2:
-            return "Usage: `/nodes connect <number>` (e.g. `/nodes connect 1`)"
+            return "Usage: `/nodes connect <number> [sats]` (e.g. `/nodes connect 1 500`)"
         try:
             idx = int(parts[1]) - 1
         except ValueError:
             return f"Invalid node number: `{parts[1]}`"
+
+        deposit_amount = None  # None = all
+        if len(parts) >= 3:
+            try:
+                deposit_amount = int(parts[2])
+            except ValueError:
+                return f"Invalid amount: `{parts[2]}`"
 
         # Get cached nodes
         try:
@@ -4624,6 +4639,11 @@ class GatewayRunner:
         if balance == 0:
             return f"Wallet is empty. Use `/topup [sats]` to fund it first."
 
+        if deposit_amount is not None and deposit_amount > balance:
+            return f"Insufficient balance: wallet has {balance} sats, requested {deposit_amount}."
+        if deposit_amount is not None and deposit_amount < 1:
+            return "Deposit amount must be at least 1 sat."
+
         # Check mint compatibility
         try:
             from hermes_cli.routstr.node_api import get_accepted_mints
@@ -4640,14 +4660,22 @@ class GatewayRunner:
         except Exception:
             pass  # Can't check — try anyway
 
-        # Deposit
+        # Deposit — full or partial amount
+        actual_deposit = deposit_amount or balance
+        token = None
         try:
             from hermes_cli.routstr.token import encode_token
             from hermes_cli.routstr.node_api import create_account, topup_cashu, get_balance
 
-            token = encode_token(wallet.mint_url, wallet.proofs)
-            wallet.proofs = []
-            wallet.save()
+            if deposit_amount and deposit_amount < balance:
+                # Partial deposit — split proofs
+                keep, send = await wallet.send(deposit_amount)
+                token = encode_token(wallet.mint_url, send)
+            else:
+                # Full deposit
+                token = encode_token(wallet.mint_url, wallet.proofs)
+                wallet.proofs = []
+                wallet.save()
 
             existing_key = get_env_value("ROUTSTR_API_KEY") or os.getenv("ROUTSTR_API_KEY", "")
             if existing_key:
@@ -4660,28 +4688,32 @@ class GatewayRunner:
                 save_env_value("ROUTSTR_API_KEY", existing_key)
             save_env_value("ROUTSTR_NODE_URL", node_url)
 
-            # Get new balance
             bal = await get_balance(node_url, existing_key)
+            wallet_remaining = wallet.get_balance()
 
             lines = [
                 f"✅ **Connected to {node['name']}!**",
                 "",
-                f"Deposited {balance} sats",
+                f"Deposited {actual_deposit} sats",
                 f"**Node balance:** {bal['sats']} sats",
-                f"**API Key:** `{existing_key}`",
-                f"**Models:** {node.get('model_count', '?')}",
-                "",
-                "`/balance` — check balance | `/model` — switch model",
             ]
+            if wallet_remaining > 0:
+                lines.append(f"**Wallet remaining:** {wallet_remaining} sats")
+            if not get_env_value("ROUTSTR_API_KEY"):
+                lines.append(f"**API Key:** `{existing_key}`")
+            lines.append(f"**Models:** {node.get('model_count', '?')}")
+            lines.append("")
+            lines.append("`/balance` — check balance | `/withdraw` — withdraw from node")
             return "\n".join(lines)
 
         except Exception as e:
-            # Recovery
-            try:
-                wallet.import_token(token)
-                return f"❌ Deposit failed: {e}\n\nTokens recovered to wallet ({wallet.get_balance()} sats)."
-            except Exception:
-                return f"❌ Deposit failed: {e}\n\n⚠️ Recovery token: `{token[:60]}...`"
+            if token:
+                try:
+                    wallet.import_token(token)
+                    return f"❌ Deposit failed: {e}\n\nTokens recovered to wallet ({wallet.get_balance()} sats)."
+                except Exception:
+                    return f"❌ Deposit failed: {e}\n\n⚠️ Recovery token: `{token[:60]}...`"
+            return f"❌ Deposit failed: {e}"
 
     async def _handle_wallet_command(self, event: MessageEvent) -> str:
         """Handle /wallet — show Cashu wallet info or change mint.
@@ -4748,6 +4780,47 @@ class GatewayRunner:
             return "\n".join(lines)
         except Exception as e:
             return f"Failed to load wallet: {e}"
+
+    async def _handle_withdraw_command(self, event: MessageEvent) -> str:
+        """Handle /withdraw — pull funds from Routstr node back to Cashu wallet."""
+        from hermes_cli.config import get_env_value, save_env_value
+
+        api_key = get_env_value("ROUTSTR_API_KEY") or os.getenv("ROUTSTR_API_KEY", "")
+        node_url = get_env_value("ROUTSTR_NODE_URL") or os.getenv("ROUTSTR_NODE_URL", "")
+
+        if not api_key or not node_url:
+            return "No active Routstr node session. Use `/nodes connect <n>` first."
+
+        # Check current node balance
+        try:
+            from hermes_cli.routstr.node_api import get_balance
+            bal = await get_balance(node_url, api_key)
+            if bal["sats"] == 0:
+                return "Node balance is 0 sats — nothing to withdraw."
+        except Exception:
+            pass  # Try withdraw anyway
+
+        try:
+            from hermes_cli.routstr.node_api import withdraw
+            from hermes_cli.routstr.wallet import CashuWallet
+
+            token = await withdraw(node_url, api_key)
+
+            wallet = CashuWallet()
+            wallet.load()
+            imported = wallet.import_token(token)
+            imported_amount = sum(p.get("amount", 0) for p in imported)
+
+            # Clear node session
+            save_env_value("ROUTSTR_API_KEY", "")
+
+            return (
+                f"✅ **Withdrawn {imported_amount} sats** from `{node_url}`\n\n"
+                f"🏦 Wallet balance: {wallet.get_balance()} sats\n\n"
+                f"To deposit to a different node: `/nodes` → `/nodes connect <n>`"
+            )
+        except Exception as e:
+            return f"❌ Withdraw failed: {e}"
 
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""

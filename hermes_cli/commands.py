@@ -103,6 +103,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("nodes", "Discover and list Routstr nodes",
                "Configuration", gateway_only=True),
     CommandDef("wallet", "Show Cashu wallet info (Routstr)",
+               "Configuration", args_hint="[mint [url]]", gateway_only=True),
+    CommandDef("withdraw", "Withdraw funds from Routstr node to wallet",
                "Configuration", gateway_only=True),
     CommandDef("prompt", "View/set custom system prompt", "Configuration",
                cli_only=True, args_hint="[text]", subcommands=("clear",)),

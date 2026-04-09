@@ -169,6 +169,35 @@ async def get_accepted_mints(
             await client.aclose()
 
 
+async def withdraw(
+    node_url: str, api_key: str, client: Optional[httpx.AsyncClient] = None
+) -> str:
+    """Withdraw all funds from a Routstr node as a Cashu token.
+
+    Returns: Cashu token string (cashuA... or cashuB...)
+    """
+    own = client is None
+    if own:
+        client = httpx.AsyncClient()
+    try:
+        resp = await client.post(
+            f"{node_url.rstrip('/')}/v1/wallet/refund",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        token = data.get("token") or data.get("cashu_token", "")
+        if isinstance(data, str) and data.startswith("cashu"):
+            token = data
+        if not token:
+            raise ValueError("No token returned from node")
+        return token
+    finally:
+        if own:
+            await client.aclose()
+
+
 async def fetch_models(
     node_url: str, client: Optional[httpx.AsyncClient] = None
 ) -> list[str]:
