@@ -4422,8 +4422,28 @@ class GatewayRunner:
         try:
             from hermes_cli.routstr.wallet import CashuWallet
             wallet = CashuWallet()
-            if not wallet.load():
+            is_new = not wallet.load()
+            if is_new:
                 await wallet.load_mint()
+                # Generate seed for new wallet
+                if not wallet.seed:
+                    mnemonic = wallet.generate_mnemonic()
+                    wallet.set_seed_from_mnemonic(mnemonic)
+                    wallet.save()
+                    # Send seed to user BEFORE proceeding
+                    adapter = self.adapters.get(event.source.platform)
+                    if adapter:
+                        await adapter.send(
+                            chat_id=event.source.chat_id,
+                            content=(
+                                "🔑 **New Cashu wallet created!**\n\n"
+                                "**Recovery seed (12 words):**\n"
+                                f"||`{mnemonic}`||\n\n"
+                                "⚠️ **Save this now** — it's the only way to recover your funds "
+                                "if wallet data is lost.\n"
+                                "`/wallet restore <12 words>` to recover."
+                            ),
+                        )
         except Exception as e:
             return f"Failed to initialize wallet: {e}"
 
