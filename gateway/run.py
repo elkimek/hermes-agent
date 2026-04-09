@@ -4729,6 +4729,33 @@ class GatewayRunner:
             wallet = CashuWallet()
             wallet.load()
 
+            # /wallet restore <mnemonic> — recover wallet from seed
+            if args.startswith("restore "):
+                mnemonic = args[8:].strip()
+                try:
+                    wallet.set_seed_from_mnemonic(mnemonic)
+                    if not wallet.active_keyset_id:
+                        await wallet.load_mint()
+                    wallet.proofs = []  # clear existing proofs before restore
+                    restored = await wallet.restore()
+                    wallet.save()
+                    return (
+                        f"✅ **Wallet restored!**\n\n"
+                        f"Recovered: {restored} sats\n"
+                        f"Balance: {wallet.get_balance()} sats\n"
+                        f"Mint: `{wallet.mint_url}`"
+                    )
+                except Exception as e:
+                    return f"❌ Restore failed: {e}"
+
+            if args == "restore":
+                return (
+                    "🔑 **Wallet Recovery**\n\n"
+                    "Restore from your 12-word seed phrase:\n"
+                    "`/wallet restore word1 word2 word3 ... word12`\n\n"
+                    "This will query the mint for previously-minted proofs."
+                )
+
             # /wallet mint <url> — change mint
             if args.startswith("mint "):
                 new_mint = args[5:].strip().rstrip("/")
@@ -4774,7 +4801,10 @@ class GatewayRunner:
                 f"**Proofs:** {len(wallet.proofs)}",
                 f"**Backup:** `~/.hermes/routstr/wallet.json`",
                 "",
+                f"**Seed:** {'✅ set (recoverable)' if wallet.seed else '❌ not set'}",
+                "",
                 "`/wallet mint` — show/change mint",
+                "`/wallet restore <12 words>` — recover from seed",
                 "`/topup [sats]` — add funds | `/balance` — node balance",
             ]
             return "\n".join(lines)

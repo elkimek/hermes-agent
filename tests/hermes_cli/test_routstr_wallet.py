@@ -79,7 +79,7 @@ class TestWalletPersistence:
             w.save()
             assert path.exists()
             data = json.loads(path.read_text())
-            assert data["version"] == 1
+            assert data["version"] == 2
             assert data["mint_url"] == "https://mint.test"
 
 
@@ -155,6 +155,68 @@ class TestLoadMint:
         assert "abc123" in w.keysets
         assert "1" in w.keysets["abc123"]["keys"]
         assert "2" in w.keysets["abc123"]["keys"]
+
+
+class TestDeterministicSecrets:
+    def test_derive_is_deterministic(self):
+        from hermes_cli.routstr.wallet import CashuWallet
+        w = CashuWallet()
+        w.seed = bytes.fromhex("aa" * 64)
+        s1, r1 = w._derive_secret_and_r("00aabbccdd", 0)
+        s2, r2 = w._derive_secret_and_r("00aabbccdd", 0)
+        assert s1 == s2
+        assert r1.to_hex() == r2.to_hex()
+
+    def test_different_counters_different_secrets(self):
+        from hermes_cli.routstr.wallet import CashuWallet
+        w = CashuWallet()
+        w.seed = bytes.fromhex("bb" * 64)
+        s1, _ = w._derive_secret_and_r("00aabbccdd", 0)
+        s2, _ = w._derive_secret_and_r("00aabbccdd", 1)
+        assert s1 != s2
+
+    def test_different_keysets_different_secrets(self):
+        from hermes_cli.routstr.wallet import CashuWallet
+        w = CashuWallet()
+        w.seed = bytes.fromhex("cc" * 64)
+        s1, _ = w._derive_secret_and_r("00aabbccdd", 0)
+        s2, _ = w._derive_secret_and_r("00112233ff", 0)
+        assert s1 != s2
+
+    def test_counter_advances(self):
+        from hermes_cli.routstr.wallet import CashuWallet
+        w = CashuWallet()
+        start = w._next_counter("keyset1", 5)
+        assert start == 0
+        assert w.counters["keyset1"] == 5
+        start2 = w._next_counter("keyset1", 3)
+        assert start2 == 5
+        assert w.counters["keyset1"] == 8
+
+    def test_seed_from_mnemonic(self):
+        from hermes_cli.routstr.wallet import CashuWallet
+        w = CashuWallet()
+        # Use a known test mnemonic
+        mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        w.set_seed_from_mnemonic(mnemonic)
+        assert len(w.seed) == 64
+        # Same mnemonic should produce same seed
+        w2 = CashuWallet()
+        w2.set_seed_from_mnemonic(mnemonic)
+        assert w.seed == w2.seed
+
+    def test_seed_persists(self, tmp_path):
+        from hermes_cli.routstr.wallet import CashuWallet
+        with patch("hermes_cli.routstr.wallet._wallet_path", return_value=tmp_path / "w.json"):
+            w = CashuWallet()
+            w.seed = bytes.fromhex("dd" * 64)
+            w.counters = {"ks1": 42}
+            w.save()
+
+            w2 = CashuWallet()
+            w2.load()
+            assert w2.seed == w.seed
+            assert w2.counters == {"ks1": 42}
 
 
 class TestMintTokens:

@@ -1,15 +1,18 @@
 """Cashu eCash wallet for Routstr — proof storage, mint API, mint/send operations.
 
 Implements the Cashu NUT protocol using extracted blind signature primitives.
+Supports deterministic secret derivation (NUT-13) for seed-based recovery.
 No dependency on the full cashu package — just coincurve + httpx.
 
 Storage: ~/.hermes/routstr/wallet.json
 """
 
+import hashlib
+import hmac as hmac_mod
 import json
 import logging
 import os
-import secrets
+import secrets as secrets_mod
 from pathlib import Path
 from typing import Any, Optional
 
@@ -56,13 +59,20 @@ def _wallet_path() -> Path:
 
 
 class CashuWallet:
-    """Minimal Cashu wallet — mints tokens, stores proofs, creates transfers."""
+    """Minimal Cashu wallet — mints tokens, stores proofs, creates transfers.
+
+    Supports deterministic secrets from a BIP-39 seed (NUT-13). When a seed
+    is set, secrets and blinding factors are derived from HMAC-SHA256 with a
+    per-keyset counter. This enables recovery via `restore()`.
+    """
 
     def __init__(self, mint_url: str = DEFAULT_MINT):
         self.mint_url = mint_url.rstrip("/")
         self.proofs: list[dict] = []
         self.keysets: dict[str, dict] = {}  # keyset_id → {"unit", "keys": {amount: pubkey_hex}}
         self.active_keyset_id: str = ""
+        self.seed: bytes = b""  # 64-byte seed from BIP-39 mnemonic
+        self.counters: dict[str, int] = {}  # keyset_id → next counter value
         self._loaded = False
 
     # ── Persistence ──────────────────────────────────────────────────────
@@ -71,11 +81,13 @@ class CashuWallet:
         """Persist wallet state to disk."""
         path = _wallet_path()
         data = {
-            "version": 1,
+            "version": 2,
             "mint_url": self.mint_url,
             "keysets": self.keysets,
             "active_keyset_id": self.active_keyset_id,
             "proofs": self.proofs,
+            "seed": self.seed.hex() if self.seed else "",
+            "counters": self.counters,
         }
         path.write_text(json.dumps(data, indent=2))
         try:
@@ -94,6 +106,9 @@ class CashuWallet:
             self.keysets = data.get("keysets", {})
             self.active_keyset_id = data.get("active_keyset_id", "")
             self.proofs = data.get("proofs", [])
+            seed_hex = data.get("seed", "")
+            self.seed = bytes.fromhex(seed_hex) if seed_hex else b""
+            self.counters = data.get("counters", {})
             self._loaded = True
             return True
         except (json.JSONDecodeError, KeyError) as e:
@@ -122,6 +137,159 @@ class CashuWallet:
         self.mint_url = mint_url
         await self.load_mint(client)
         self.save()
+
+    # ── Seed + deterministic secrets (NUT-13) ──────────────────────────
+
+    def set_seed_from_mnemonic(self, mnemonic: str):
+        """Derive a 64-byte seed from a BIP-39 mnemonic phrase."""
+        try:
+            from mnemonic import Mnemonic
+            m = Mnemonic("english")
+            if not m.check(mnemonic):
+                raise ValueError("Invalid mnemonic")
+            self.seed = hashlib.pbkdf2_hmac(
+                "sha512", mnemonic.encode("utf-8"), b"mnemonic", 2048
+            )
+        except ImportError:
+            raise ImportError("mnemonic package required: pip install mnemonic")
+
+    @staticmethod
+    def generate_mnemonic() -> str:
+        """Generate a new 12-word BIP-39 mnemonic."""
+        try:
+            from mnemonic import Mnemonic
+            return Mnemonic("english").generate(128)
+        except ImportError:
+            raise ImportError("mnemonic package required: pip install mnemonic")
+
+    def _derive_secret_and_r(self, keyset_id: str, counter: int) -> tuple[str, PrivateKey]:
+        """Derive a deterministic secret + blinding factor for NUT-13 (HMAC-SHA256).
+
+        Path: HMAC_SHA256(seed, "Cashu_KDF_HMAC_SHA256" || keyset_id || counter || 0x00/0x01)
+        """
+        keyset_id_bytes = bytes.fromhex(keyset_id)
+        counter_bytes = counter.to_bytes(8, byteorder="big", signed=False)
+        base = b"Cashu_KDF_HMAC_SHA256" + keyset_id_bytes + counter_bytes
+        secret_bytes = hmac_mod.new(self.seed, base + b"\x00", hashlib.sha256).digest()
+        r_bytes = hmac_mod.new(self.seed, base + b"\x01", hashlib.sha256).digest()
+        return secret_bytes.hex(), PrivateKey(r_bytes)
+
+    def _next_counter(self, keyset_id: str, count: int = 1) -> int:
+        """Reserve `count` counter values for a keyset. Returns the start value."""
+        start = self.counters.get(keyset_id, 0)
+        self.counters[keyset_id] = start + count
+        return start
+
+    # ── Restore from seed ────────────────────────────────────────────────
+
+    async def restore(self, client: Optional[httpx.AsyncClient] = None) -> int:
+        """Restore proofs from the mint using deterministic secrets.
+
+        Queries POST {mint}/v1/restore with blinded messages derived from
+        the seed. The mint returns blind signatures for any that were previously
+        minted. We unblind them and add to the wallet.
+
+        Returns: number of sats restored.
+        """
+        if not self.seed:
+            raise ValueError("No seed set. Call set_seed_from_mnemonic() first.")
+        if not self.active_keyset_id:
+            raise ValueError("No active keyset. Call load_mint() first.")
+
+        own = client is None
+        if own:
+            client = httpx.AsyncClient()
+
+        try:
+            batch_size = 100
+            gap_limit = 50  # stop after this many consecutive empty batches
+            start = 0
+            total_restored = 0
+            empty_batches = 0
+
+            while empty_batches < gap_limit:
+                # Generate blinded messages from deterministic secrets
+                outputs = []
+                secrets_list = []
+                rs_list = []
+
+                for i in range(batch_size):
+                    counter = start + i
+                    secret, r = self._derive_secret_and_r(self.active_keyset_id, counter)
+                    B_, _ = step1_alice(secret, r)
+                    outputs.append({
+                        "amount": 1,  # amount doesn't matter for restore
+                        "id": self.active_keyset_id,
+                        "B_": B_.format().hex(),
+                    })
+                    secrets_list.append(secret)
+                    rs_list.append(r)
+
+                # Send to mint's restore endpoint
+                resp = await client.post(
+                    f"{self.mint_url}/v1/restore",
+                    json={"outputs": outputs},
+                    timeout=15.0,
+                )
+
+                if resp.status_code == 404:
+                    logger.debug("Mint does not support /v1/restore")
+                    break
+
+                if resp.status_code != 200:
+                    logger.debug("Restore batch failed: %s", resp.status_code)
+                    break
+
+                data = resp.json()
+                signatures = data.get("signatures", [])
+                restored_outputs = data.get("outputs", [])
+
+                if not signatures:
+                    empty_batches += 1
+                    start += batch_size
+                    continue
+
+                empty_batches = 0  # reset gap counter
+
+                # Unblind signatures and create proofs
+                for sig in signatures:
+                    # Find matching output by B_
+                    sig_b = sig.get("B_", "")
+                    for j, out in enumerate(outputs):
+                        if out["B_"] == sig_b:
+                            C_ = PublicKey(bytes.fromhex(sig["C_"]))
+                            amount = sig["amount"]
+                            A = self._get_mint_key(self.active_keyset_id, amount)
+                            C = step3_alice(C_, rs_list[j], A)
+                            proof = {
+                                "id": self.active_keyset_id,
+                                "amount": amount,
+                                "secret": secrets_list[j],
+                                "C": C.format().hex(),
+                            }
+                            # Don't add duplicates
+                            existing_secrets = {p["secret"] for p in self.proofs}
+                            if proof["secret"] not in existing_secrets:
+                                self.proofs.append(proof)
+                                total_restored += amount
+                            break
+
+                start += batch_size
+
+            # Update counter to highest restored position
+            if start > 0:
+                self.counters[self.active_keyset_id] = max(
+                    self.counters.get(self.active_keyset_id, 0), start
+                )
+
+            if total_restored > 0:
+                self.save()
+
+            return total_restored
+
+        finally:
+            if own:
+                await client.aclose()
 
     # ── Mint info ────────────────────────────────────────────────────────
 
@@ -253,20 +421,34 @@ class CashuWallet:
                 raise ValueError(f"Cannot split amount {amount} into denominations")
 
             # Generate secrets, blinding factors, and blinded messages
+            # Use deterministic derivation if seed is available (NUT-13)
             secrets_list = []
             blinding_factors = []
             outputs = []
 
-            for amt in amounts:
-                secret = secrets.token_hex(32)
-                B_, r = step1_alice(secret)
-                secrets_list.append(secret)
-                blinding_factors.append(r)
-                outputs.append({
-                    "amount": amt,
-                    "id": self.active_keyset_id,
-                    "B_": B_.format().hex(),
-                })
+            if self.seed:
+                counter_start = self._next_counter(self.active_keyset_id, len(amounts))
+                for i, amt in enumerate(amounts):
+                    secret, r = self._derive_secret_and_r(self.active_keyset_id, counter_start + i)
+                    B_, _ = step1_alice(secret, r)
+                    secrets_list.append(secret)
+                    blinding_factors.append(r)
+                    outputs.append({
+                        "amount": amt,
+                        "id": self.active_keyset_id,
+                        "B_": B_.format().hex(),
+                    })
+            else:
+                for amt in amounts:
+                    secret = secrets_mod.token_hex(32)
+                    B_, r = step1_alice(secret)
+                    secrets_list.append(secret)
+                    blinding_factors.append(r)
+                    outputs.append({
+                        "amount": amt,
+                        "id": self.active_keyset_id,
+                        "B_": B_.format().hex(),
+                    })
 
             # Send blinded messages to mint
             resp = await client.post(
@@ -370,16 +552,29 @@ class CashuWallet:
             new_secrets = []
             new_rs = []
             outputs = []
-            for amt in all_amounts:
-                secret = secrets.token_hex(32)
-                B_, r = step1_alice(secret)
-                new_secrets.append(secret)
-                new_rs.append(r)
-                outputs.append({
-                    "amount": amt,
-                    "id": self.active_keyset_id,
-                    "B_": B_.format().hex(),
-                })
+            if self.seed:
+                counter_start = self._next_counter(self.active_keyset_id, len(all_amounts))
+                for i, amt in enumerate(all_amounts):
+                    secret, r = self._derive_secret_and_r(self.active_keyset_id, counter_start + i)
+                    B_, _ = step1_alice(secret, r)
+                    new_secrets.append(secret)
+                    new_rs.append(r)
+                    outputs.append({
+                        "amount": amt,
+                        "id": self.active_keyset_id,
+                        "B_": B_.format().hex(),
+                    })
+            else:
+                for amt in all_amounts:
+                    secret = secrets_mod.token_hex(32)
+                    B_, r = step1_alice(secret)
+                    new_secrets.append(secret)
+                    new_rs.append(r)
+                    outputs.append({
+                        "amount": amt,
+                        "id": self.active_keyset_id,
+                        "B_": B_.format().hex(),
+                    })
 
             # Swap at mint
             swap_inputs = [

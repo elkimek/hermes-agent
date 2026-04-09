@@ -2361,10 +2361,26 @@ def _model_flow_routstr(config, current_model=""):
                 print(f"  {e}")
                 return
 
-            # Fund wallet via Lightning
+            # Generate seed for deterministic wallet
             from hermes_cli.routstr.wallet import CashuWallet
 
             wallet = CashuWallet()
+            mnemonic = wallet.generate_mnemonic()
+            wallet.set_seed_from_mnemonic(mnemonic)
+
+            print()
+            print("  ⚠  Your recovery seed phrase (12 words):")
+            print(f"  {mnemonic}")
+            print()
+            print("  Save this — it can recover your wallet if wallet.json is lost.")
+            print()
+            try:
+                input("  Press Enter when you've saved it...")
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+
+            # Fund wallet via Lightning
             print()
             print("  Loading mint...", end="", flush=True)
             try:
