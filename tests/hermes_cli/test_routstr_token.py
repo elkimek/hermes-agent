@@ -41,6 +41,54 @@ class TestTokenV3:
             decode_token("invalidTokenString")
 
 
+class TestTokenV4Encode:
+    def test_encode_v4_produces_cashuB_prefix(self):
+        try:
+            import cbor2  # noqa: F401
+        except ImportError:
+            pytest.skip("cbor2 not installed")
+        from hermes_cli.routstr.token import encode_token
+        token = encode_token("https://mint.example.com", [
+            {"id": "00aabbccdd", "amount": 8, "secret": "s1", "C": "02" + "aa" * 32},
+        ], version="v4")
+        assert token.startswith("cashuB")
+
+    def test_v4_round_trip(self):
+        try:
+            import cbor2  # noqa: F401
+        except ImportError:
+            pytest.skip("cbor2 not installed")
+        from hermes_cli.routstr.token import encode_token, decode_token
+        proofs = [
+            {"id": "00aabbccdd", "amount": 4, "secret": "s1", "C": "02" + "bb" * 32},
+            {"id": "00aabbccdd", "amount": 16, "secret": "s2", "C": "02" + "cc" * 32},
+        ]
+        token = encode_token("https://mint.example.com", proofs, version="v4")
+        decoded = decode_token(token)
+        assert decoded["mint"] == "https://mint.example.com"
+        assert len(decoded["proofs"]) == 2
+        assert decoded["proofs"][0]["amount"] == 4
+        assert decoded["proofs"][1]["amount"] == 16
+
+    def test_uri_prefix(self):
+        from hermes_cli.routstr.token import encode_token
+        token = encode_token("https://mint.test", [
+            {"id": "aabb", "amount": 1, "secret": "s", "C": "02cc"},
+        ], uri_prefix=True)
+        assert token.startswith("cashu:cashuA")
+
+    def test_v4_uri_prefix(self):
+        try:
+            import cbor2  # noqa: F401
+        except ImportError:
+            pytest.skip("cbor2 not installed")
+        from hermes_cli.routstr.token import encode_token
+        token = encode_token("https://mint.test", [
+            {"id": "00aabb", "amount": 1, "secret": "s", "C": "02" + "dd" * 32},
+        ], version="v4", uri_prefix=True)
+        assert token.startswith("cashu:cashuB")
+
+
 class TestTokenV4:
     def test_decode_cbor_token(self):
         """Test decoding a CBOR-encoded cashuB token."""

@@ -121,9 +121,61 @@ def _decode_v4(payload_str: str) -> dict[str, Any]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def encode_token(mint_url: str, proofs: list[dict], unit: str = "sat") -> str:
-    """Encode proofs as a Cashu token string (V3/cashuA format)."""
-    return encode_v3(mint_url, proofs, unit)
+def encode_v4(mint_url: str, proofs: list[dict], unit: str = "sat") -> str:
+    """Encode proofs as a V4 (cashuB) token string using CBOR.
+
+    V4 groups proofs by keyset ID and uses compact binary encoding.
+    """
+    try:
+        import cbor2
+    except ImportError:
+        raise ImportError(
+            "cbor2 is required to encode cashuB (V4) tokens. "
+            "Install with: pip install cbor2"
+        )
+
+    # Group proofs by keyset ID
+    by_keyset: dict[str, list[dict]] = {}
+    for p in proofs:
+        kid = p.get("id", "")
+        by_keyset.setdefault(kid, []).append(p)
+
+    token_entries = []
+    for kid, kid_proofs in by_keyset.items():
+        entry_proofs = []
+        for p in kid_proofs:
+            c_val = p.get("C", "")
+            entry_proofs.append({
+                "a": p.get("amount", 0),
+                "s": p.get("secret", ""),
+                "c": bytes.fromhex(c_val) if isinstance(c_val, str) else c_val,
+            })
+        token_entries.append({
+            "i": bytes.fromhex(kid) if isinstance(kid, str) else kid,
+            "p": entry_proofs,
+        })
+
+    token_data = {"m": mint_url, "u": unit, "t": token_entries}
+    return PREFIX_V4 + _b64url_encode(cbor2.dumps(token_data))
+
+
+def encode_token(
+    mint_url: str, proofs: list[dict], unit: str = "sat",
+    version: str = "v3", uri_prefix: bool = False,
+) -> str:
+    """Encode proofs as a Cashu token string.
+
+    Args:
+        version: "v3" (cashuA, default) or "v4" (cashuB)
+        uri_prefix: If True, prepend "cashu:" URI prefix
+    """
+    if version == "v4":
+        token = encode_v4(mint_url, proofs, unit)
+    else:
+        token = encode_v3(mint_url, proofs, unit)
+    if uri_prefix:
+        token = URI_PREFIX + token
+    return token
 
 
 def decode_token(token: str) -> dict[str, Any]:

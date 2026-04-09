@@ -4756,15 +4756,24 @@ class GatewayRunner:
                     "This will query the mint for previously-minted proofs."
                 )
 
-            # /wallet send <sats> — export as Cashu token
+            # /wallet send <sats> [v3|v4] [cashu:] — export as Cashu token
             if args.startswith("send"):
                 parts = args.split()
                 if len(parts) < 2:
-                    return "Usage: `/wallet send <sats>` — export as Cashu token"
+                    return (
+                        "Usage: `/wallet send <sats> [v3|v4] [uri]`\n\n"
+                        "**Examples:**\n"
+                        "`/wallet send 500` — cashuA token (V3, default)\n"
+                        "`/wallet send 500 v4` — cashuB token (V4, compact)\n"
+                        "`/wallet send 500 v3 uri` — cashu:cashuA... with URI prefix\n"
+                        "`/wallet send 500 v4 uri` — cashu:cashuB... with URI prefix"
+                    )
                 try:
                     send_amount = int(parts[1])
                 except ValueError:
                     return f"Invalid amount: `{parts[1]}`"
+                version = "v4" if "v4" in parts[2:] else "v3"
+                uri_prefix = "uri" in parts[2:] or "cashu:" in parts[2:]
                 balance = wallet.get_balance()
                 if send_amount > balance:
                     return f"Insufficient balance: {balance} sats"
@@ -4773,9 +4782,11 @@ class GatewayRunner:
                 try:
                     keep, send = await wallet.send(send_amount)
                     from hermes_cli.routstr.token import encode_token
-                    token = encode_token(wallet.mint_url, send)
+                    token = encode_token(wallet.mint_url, send, version=version, uri_prefix=uri_prefix)
+                    fmt = "cashuB" if version == "v4" else "cashuA"
+                    prefix_note = " (with cashu: prefix)" if uri_prefix else ""
                     return (
-                        f"📤 **Cashu Token ({send_amount} sats)**\n\n"
+                        f"📤 **Cashu Token ({send_amount} sats, {fmt}{prefix_note})**\n\n"
                         f"`{token}`\n\n"
                         f"Send this to anyone — they can redeem it in any Cashu wallet.\n"
                         f"Wallet remaining: {wallet.get_balance()} sats"
