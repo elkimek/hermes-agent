@@ -131,12 +131,12 @@ class CashuWallet:
             info = resp.json()
             if "nuts" not in info:
                 raise ValueError("Not a valid Cashu mint (no 'nuts' in /v1/info)")
+            self.mint_url = mint_url
+            await self.load_mint(client)
+            self.save()
         finally:
             if own:
                 await client.aclose()
-        self.mint_url = mint_url
-        await self.load_mint(client)
-        self.save()
 
     # ── Seed + deterministic secrets (NUT-13) ──────────────────────────
 
