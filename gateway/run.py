@@ -4399,6 +4399,7 @@ class GatewayRunner:
     async def _handle_routstr_topup(self, event: MessageEvent) -> str:
         """Routstr topup — fund wallet via Lightning, mint tokens, deposit to node."""
         raw_args = event.get_command_args().strip()
+        logger.debug("routstr topup raw_args: %r (len=%d)", raw_args[:100], len(raw_args))
         if not raw_args or raw_args.lower() == "help":
             return (
                 "⚡ **Routstr Top-Up**\n\n"

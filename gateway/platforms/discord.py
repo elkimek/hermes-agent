@@ -2518,7 +2518,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         event_text = message.content
         if pending_text_injection:
-            event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+            event_text = f"{event_text}\n\n{pending_text_injection}" if event_text else pending_text_injection
 
         # Defense-in-depth: prevent empty user messages from entering session
         # (can happen when user sends @mention-only with no other text)
