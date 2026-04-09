@@ -934,6 +934,7 @@ def select_provider_and_model(args=None):
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
+        "routstr": "Routstr",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active) if active else "none"
@@ -952,6 +953,7 @@ def select_provider_and_model(args=None):
         ("qwen-oauth", "Qwen OAuth (reuses local Qwen CLI login)"),
         ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
         ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
+        ("routstr", "Routstr (decentralized Bitcoin AI, Cashu wallet)"),
     ]
 
     extended_providers = [
@@ -1077,6 +1079,8 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
+    elif selected_provider == "routstr":
+        _model_flow_routstr(config, current_model)
     elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -2280,6 +2284,310 @@ def _model_flow_kimi(config, current_model=""):
 
         endpoint_label = "Kimi Coding" if is_coding_plan else "Moonshot"
         print(f"Default model set to: {selected} (via {endpoint_label})")
+    else:
+        print("No change.")
+
+
+def _model_flow_routstr(config, current_model=""):
+    """Routstr flow — Cashu wallet setup, node discovery, deposit, model selection."""
+    import asyncio
+    import time
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.models import fetch_api_models
+
+    pconfig = PROVIDER_REGISTRY["routstr"]
+    existing_key = get_env_value("ROUTSTR_API_KEY") or os.getenv("ROUTSTR_API_KEY", "")
+    node_url = get_env_value("ROUTSTR_NODE_URL") or os.getenv("ROUTSTR_NODE_URL", "")
+
+    # ── Step 1: Check existing key ──
+    if existing_key and node_url:
+        print(f"  Routstr key: {existing_key[:8]}... ✓")
+        print(f"  Node: {node_url}")
+        try:
+            from hermes_cli.routstr.node_api import get_balance
+            bal = asyncio.run(get_balance(node_url, existing_key))
+            print(f"  Balance: {bal['sats']} sats ({bal['total_requests']} requests)")
+        except Exception:
+            print("  Balance: (could not fetch)")
+        print()
+    elif existing_key:
+        print(f"  Routstr key: {existing_key[:8]}... ✓")
+        print(f"  No node configured. Run node discovery below.")
+        print()
+    else:
+        # ── Step 2: Wallet setup ──
+        print("  No Routstr key configured.")
+        print()
+        print("  Routstr is a decentralized Bitcoin AI network.")
+        print("  It uses Cashu eCash tokens — you need a wallet to get started.")
+        print()
+        try:
+            choice = input("  [1] Create wallet + fund via Lightning  [2] Enter existing key  [Enter] Cancel: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+
+        if choice == "2":
+            try:
+                import getpass
+                new_key = getpass.getpass("  Routstr API key (sk-...): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not new_key:
+                print("  Cancelled.")
+                return
+            save_env_value("ROUTSTR_API_KEY", new_key)
+            existing_key = new_key
+            print("  Key saved.")
+            # Ask for node URL
+            try:
+                node_input = input("  Node URL [https://api.routstr.com]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                node_input = ""
+            node_url = node_input or "https://api.routstr.com"
+            save_env_value("ROUTSTR_NODE_URL", node_url)
+            print()
+
+        elif choice == "1":
+            try:
+                from hermes_cli.routstr import require
+                require()
+            except RuntimeError as e:
+                print(f"  {e}")
+                return
+
+            # Generate mnemonic
+            try:
+                from mnemonic import Mnemonic
+                mnemo = Mnemonic("english")
+                seed_phrase = mnemo.generate(128)  # 12 words
+            except ImportError:
+                print("  mnemonic package not installed. Run: pip install mnemonic")
+                return
+
+            print()
+            print("  ⚠  Your wallet seed phrase (12 words):")
+            print(f"  {seed_phrase}")
+            print()
+            print("  Write this down and store it safely — it's the ONLY way to recover your wallet.")
+            print()
+            try:
+                input("  Press Enter when you've saved it...")
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+
+            # Fund wallet via Lightning
+            from hermes_cli.routstr.wallet import CashuWallet
+
+            wallet = CashuWallet()
+            print()
+            print("  Loading mint...", end="", flush=True)
+            try:
+                asyncio.run(wallet.load_mint())
+                print(" done!")
+            except Exception as e:
+                print(f" failed: {e}")
+                return
+
+            # Ask for funding amount
+            print()
+            print("  Fund your wallet via Lightning:")
+            print("    [1] 1,000 sats (~$1)")
+            print("    [2] 5,000 sats (~$5)")
+            print("    [3] 10,000 sats (~$10)")
+            print("    [c] Custom amount")
+            print()
+            try:
+                fpick = input("  Choose amount [1]: ").strip() or "1"
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+
+            if fpick == "c":
+                try:
+                    amount_sats = int(input("  Amount in sats: ").strip())
+                except (ValueError, KeyboardInterrupt, EOFError):
+                    print("  Invalid amount.")
+                    return
+            elif fpick in ("1", "2", "3"):
+                amount_sats = [1000, 5000, 10000][int(fpick) - 1]
+            else:
+                print("  Invalid choice.")
+                return
+
+            print(f"\n  Creating {amount_sats} sat invoice...", end="", flush=True)
+            try:
+                quote = asyncio.run(wallet.create_funding_invoice(amount_sats))
+                bolt11 = quote.get("request", "")
+                quote_id = quote.get("quote", "")
+                print(" done!")
+            except Exception as e:
+                print(f" failed: {e}")
+                return
+
+            print()
+            if bolt11:
+                print(f"  Lightning invoice:")
+                print(f"  {bolt11}")
+                print()
+
+            if not quote_id:
+                print("  No quote ID returned.")
+                return
+
+            # Poll for payment
+            print("  Waiting for payment...", end="", flush=True)
+            paid = False
+            try:
+                for _ in range(90):
+                    time.sleep(2)
+                    try:
+                        status = asyncio.run(wallet.check_funding_status(quote_id))
+                        state = status.get("state", "").upper()
+                        if state in ("PAID", "ISSUED"):
+                            paid = True
+                            break
+                    except Exception:
+                        pass
+                    print(".", end="", flush=True)
+            except KeyboardInterrupt:
+                pass
+
+            if not paid:
+                print(" timed out.")
+                return
+
+            print(" paid!")
+
+            # Mint tokens
+            print("  Minting tokens...", end="", flush=True)
+            try:
+                proofs = asyncio.run(wallet.mint_tokens(amount_sats, quote_id))
+                print(f" done! {wallet.get_balance()} sats in wallet")
+            except Exception as e:
+                print(f" failed: {e}")
+                return
+
+            # Save mnemonic
+            save_env_value("ROUTSTR_WALLET_MNEMONIC", seed_phrase)
+            print()
+
+            # ── Step 3: Node discovery + deposit ──
+            print("  Discovering Routstr nodes...", end="", flush=True)
+            try:
+                from hermes_cli.routstr.nostr_discovery import discover_nodes
+                nodes = asyncio.run(discover_nodes())
+                online = [n for n in nodes if n.get("online")]
+                print(f" found {len(online)} online node(s)")
+            except Exception as e:
+                print(f" failed: {e}")
+                # Fallback to centralized
+                online = [{"name": "api.routstr.com", "urls": ["https://api.routstr.com"], "model_count": 395}]
+                print(f"  Using fallback: api.routstr.com")
+
+            if not online:
+                print("  No online nodes found. Try again later.")
+                return
+
+            # Show nodes
+            print()
+            for i, node in enumerate(online[:5]):
+                url = node["urls"][0] if node["urls"] else "?"
+                print(f"    [{i + 1}] {node['name']} ({url}) — {node.get('model_count', '?')} models")
+            print()
+            try:
+                npick = input(f"  Choose node [1]: ").strip() or "1"
+                selected_node = online[int(npick) - 1]
+            except (ValueError, IndexError, KeyboardInterrupt, EOFError):
+                selected_node = online[0]
+
+            node_url = selected_node["urls"][0] if selected_node["urls"] else "https://api.routstr.com"
+
+            # Deposit to node
+            deposit_amount = wallet.get_balance()
+            print(f"\n  Depositing {deposit_amount} sats to {selected_node['name']}...", end="", flush=True)
+            try:
+                from hermes_cli.routstr.token import encode_token
+                from hermes_cli.routstr.node_api import create_account, topup_cashu
+
+                # Create token from wallet proofs
+                token = encode_token(wallet.mint_url, wallet.proofs)
+                wallet.proofs = []  # clear wallet — proofs are on the node now
+                wallet.save()
+
+                # Try create account or topup
+                if existing_key:
+                    result = asyncio.run(topup_cashu(node_url, existing_key, token))
+                else:
+                    result = asyncio.run(create_account(node_url, token))
+                    existing_key = result.get("api_key", "")
+
+                print(" done!")
+                if existing_key:
+                    save_env_value("ROUTSTR_API_KEY", existing_key)
+                    save_env_value("ROUTSTR_NODE_URL", node_url)
+                    print(f"  API Key: {existing_key}")
+                    print(f"  Node: {node_url}")
+            except Exception as e:
+                print(f" failed: {e}")
+                # Recovery: re-import token back to wallet
+                try:
+                    wallet.import_token(token)
+                    print(f"  Tokens recovered to wallet ({wallet.get_balance()} sats)")
+                except Exception:
+                    print(f"  ⚠  Recovery token: {token[:60]}...")
+                return
+            print()
+
+        else:
+            print("  Cancelled.")
+            return
+
+    # ── Step 4: Model selection ──
+    if not node_url:
+        node_url = pconfig.inference_base_url
+
+    effective_base = node_url.rstrip("/")
+    if not effective_base.endswith("/v1"):
+        effective_base += "/v1"
+
+    curated = _PROVIDER_MODELS.get("routstr", [])
+    live_models = fetch_api_models(existing_key, effective_base)
+    if live_models and len(live_models) >= len(curated):
+        model_list = live_models
+        print(f"  Found {len(model_list)} model(s) from node")
+    else:
+        model_list = curated
+        if model_list:
+            print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        _save_model_choice(selected)
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "routstr"
+        model["base_url"] = effective_base
+        model.pop("api_mode", None)
+        save_config(cfg)
+        deactivate_provider()
+        print(f"Default model set to: {selected} (via Routstr @ {node_url})")
     else:
         print("No change.")
 
@@ -4321,7 +4629,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "routstr"],
         default=None,
         help="Inference provider (default: auto)"
     )
