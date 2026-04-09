@@ -4404,17 +4404,72 @@ class GatewayRunner:
                 "⚡ **Routstr Top-Up**\n\n"
                 "**Usage:**\n"
                 "`/topup 1000` — fund 1,000 sats via Lightning\n"
-                "`/topup 5000` — fund 5,000 sats\n\n"
-                "Flow: Lightning invoice → Cashu mint → deposit to node\n"
+                "`/topup 5000` — fund 5,000 sats\n"
+                "`/topup cashuA...` — fund with a Cashu token\n\n"
+                "Lightning flow: invoice → Cashu mint → deposit to node\n"
                 "`/balance` — check balance\n"
                 "`/nodes` — discover nodes\n"
                 "`/wallet` — wallet info"
             )
 
+        # Check if arg is a Cashu token instead of a number
+        first_arg = raw_args.split()[0] if raw_args else ""
+        token_arg = raw_args.strip()
+        if token_arg.startswith("cashu:"):
+            token_arg = token_arg[6:]
+        if token_arg.startswith("cashuA") or token_arg.startswith("cashuB"):
+            # Cashu token topup — receive into wallet, auto-deposit to node
+            try:
+                from hermes_cli.routstr.wallet import CashuWallet
+                wallet = CashuWallet()
+                is_new = not wallet.load()
+                if is_new:
+                    await wallet.load_mint()
+                    if not wallet.seed:
+                        mnemonic = wallet.generate_mnemonic()
+                        wallet.set_seed_from_mnemonic(mnemonic)
+                        wallet.save()
+                        adapter = self.adapters.get(event.source.platform)
+                        if adapter:
+                            await adapter.send(
+                                chat_id=event.source.chat_id,
+                                content=(
+                                    "🔑 **New Cashu wallet created!**\n\n"
+                                    "**Recovery seed (12 words):**\n"
+                                    f"||`{mnemonic}`||\n\n"
+                                    "⚠️ **Save this now.**\n"
+                                    "`/wallet restore <12 words>` to recover."
+                                ),
+                            )
+                imported = wallet.import_token(raw_args.strip())
+                amount = sum(p.get("amount", 0) for p in imported)
+
+                # Auto-deposit to node if connected
+                from hermes_cli.config import get_env_value
+                api_key = get_env_value("ROUTSTR_API_KEY") or os.getenv("ROUTSTR_API_KEY", "")
+                node_url = get_env_value("ROUTSTR_NODE_URL") or os.getenv("ROUTSTR_NODE_URL", "")
+                if api_key and node_url:
+                    try:
+                        from hermes_cli.routstr.token import encode_token
+                        from hermes_cli.routstr.node_api import topup_cashu, get_balance
+                        token = encode_token(wallet.mint_url, wallet.proofs)
+                        wallet.proofs = []
+                        wallet.save()
+                        await topup_cashu(node_url, api_key, token)
+                        bal = await get_balance(node_url, api_key)
+                        return f"✅ **Received {amount} sats** via Cashu token → deposited to node.\n\n⚡ Node balance: {bal['sats']} sats"
+                    except Exception as e:
+                        wallet.import_token(token)
+                        return f"✅ Received {amount} sats to wallet (node deposit failed: {e}).\n\nWallet: {wallet.get_balance()} sats | Use `/nodes connect` to deposit."
+
+                return f"✅ **Received {amount} sats** to wallet.\n\nWallet: {wallet.get_balance()} sats | Use `/nodes connect` to deposit to a node."
+            except Exception as e:
+                return f"Failed to receive token: {e}"
+
         try:
-            amount_sats = int(raw_args.split()[0])
+            amount_sats = int(first_arg)
         except ValueError:
-            return f"Invalid amount: `{raw_args}`. Usage: `/topup [sats]`"
+            return f"Invalid amount: `{raw_args}`. Usage: `/topup [sats]` or `/topup cashuA...`"
 
         if amount_sats < 100:
             return "Minimum is 100 sats."
