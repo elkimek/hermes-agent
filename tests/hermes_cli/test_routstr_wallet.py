@@ -98,21 +98,29 @@ class TestWalletBalance:
 
 class TestWalletExportImport:
     def test_export_all(self):
+        try:
+            import cbor2  # noqa: F401
+        except ImportError:
+            pytest.skip("cbor2 not installed")
         from hermes_cli.routstr.wallet import CashuWallet
         w = CashuWallet("https://mint.test")
         w.proofs = [
-            {"id": "ks1", "amount": 4, "secret": "s1", "C": "02aa"},
+            {"id": "00aabb", "amount": 4, "secret": "s1", "C": "02" + "aa" * 32},
         ]
         token = w.export_token()
-        assert token.startswith("cashuA")
+        assert token.startswith("cashuB")
 
     def test_import_token(self, tmp_path):
+        try:
+            import cbor2  # noqa: F401
+        except ImportError:
+            pytest.skip("cbor2 not installed")
         from hermes_cli.routstr.wallet import CashuWallet
         from hermes_cli.routstr.token import encode_token
 
         with patch("hermes_cli.routstr.wallet._wallet_path", return_value=tmp_path / "w.json"):
             token = encode_token("https://mint.test", [
-                {"id": "ks1", "amount": 8, "secret": "s1", "C": "02bb"},
+                {"id": "00aabb", "amount": 8, "secret": "s1", "C": "02" + "bb" * 32},
             ])
             w = CashuWallet("https://mint.test")
             imported = w.import_token(token)

@@ -175,12 +175,12 @@ def encode_v4(mint_url: str, proofs: list[dict], unit: str = "sat") -> str:
 
 def encode_token(
     mint_url: str, proofs: list[dict], unit: str = "sat",
-    version: str = "v3", uri_prefix: bool = False,
+    version: str = "v4", uri_prefix: bool = False,
 ) -> str:
     """Encode proofs as a Cashu token string.
 
     Args:
-        version: "v3" (cashuA, default) or "v4" (cashuB)
+        version: "v4" (cashuB, default) or "v3" (cashuA, legacy)
         uri_prefix: If True, prepend "cashu:" URI prefix
     """
     if version == "v4":

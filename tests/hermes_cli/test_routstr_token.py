@@ -4,11 +4,11 @@ import pytest
 
 
 class TestTokenV3:
-    def test_encode_produces_cashuA_prefix(self):
+    def test_encode_v3_produces_cashuA_prefix(self):
         from hermes_cli.routstr.token import encode_token
         token = encode_token("https://mint.example.com", [
             {"id": "abc123", "amount": 8, "secret": "secret1", "C": "02deadbeef"},
-        ])
+        ], version="v3")
         assert token.startswith("cashuA")
 
     def test_round_trip(self):
@@ -17,7 +17,7 @@ class TestTokenV3:
             {"id": "aabbccdd", "amount": 1, "secret": "s1", "C": "02aa"},
             {"id": "aabbccdd", "amount": 4, "secret": "s2", "C": "02bb"},
         ]
-        token = encode_token("https://mint.example.com", proofs)
+        token = encode_token("https://mint.example.com", proofs, version="v3")
         decoded = decode_token(token)
         assert decoded["mint"] == "https://mint.example.com"
         assert decoded["unit"] == "sat"
@@ -29,7 +29,7 @@ class TestTokenV3:
         from hermes_cli.routstr.token import encode_token, decode_token
         token = encode_token("https://mint.example.com", [
             {"id": "abc", "amount": 2, "secret": "s", "C": "02cc"},
-        ])
+        ], version="v3")
         # Add cashu: prefix
         decoded = decode_token("cashu:" + token)
         assert decoded["mint"] == "https://mint.example.com"
@@ -70,12 +70,16 @@ class TestTokenV4Encode:
         assert decoded["proofs"][0]["amount"] == 4
         assert decoded["proofs"][1]["amount"] == 16
 
-    def test_uri_prefix(self):
+    def test_uri_prefix_default_v4(self):
+        try:
+            import cbor2  # noqa: F401
+        except ImportError:
+            pytest.skip("cbor2 not installed")
         from hermes_cli.routstr.token import encode_token
         token = encode_token("https://mint.test", [
-            {"id": "aabb", "amount": 1, "secret": "s", "C": "02cc"},
+            {"id": "00aabb", "amount": 1, "secret": "s", "C": "02" + "cc" * 32},
         ], uri_prefix=True)
-        assert token.startswith("cashu:cashuA")
+        assert token.startswith("cashu:cashuB")
 
     def test_v4_uri_prefix(self):
         try:
