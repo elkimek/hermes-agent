@@ -863,6 +863,226 @@ def cmd_setup(args):
     run_setup_wizard(args)
 
 
+def cmd_wallet(args):
+    """Show Cashu wallet info, manage mint, send/receive tokens."""
+    import asyncio
+    sub = getattr(args, "wallet_cmd", None)
+
+    from hermes_cli.routstr.wallet import CashuWallet
+    wallet = CashuWallet()
+    wallet.load()
+
+    if sub == "send":
+        amount = args.amount
+        if wallet.get_balance() < amount:
+            print(f"Insufficient balance: {wallet.get_balance()} sats")
+            return
+        try:
+            keep, send = asyncio.run(wallet.send(amount))
+            from hermes_cli.routstr.token import encode_token
+            version = "v3" if args.v3 else "v4"
+            token = encode_token(wallet.mint_url, send, version=version, uri_prefix=args.uri)
+            print(f"\n  {token}\n")
+            print(f"  {amount} sats — send this to anyone with a Cashu wallet")
+            print(f"  Wallet remaining: {wallet.get_balance()} sats")
+        except Exception as e:
+            print(f"Failed: {e}")
+        return
+
+    if sub == "receive":
+        from hermes_cli.routstr.token import extract_token
+        token = extract_token(args.token)
+        if not token:
+            print("No valid Cashu token found (expected cashuA... or cashuB...)")
+            return
+        try:
+            imported = wallet.import_token(token)
+            amount = sum(p.get("amount", 0) for p in imported)
+            print(f"  Received {amount} sats")
+            print(f"  Wallet balance: {wallet.get_balance()} sats")
+        except Exception as e:
+            print(f"Failed: {e}")
+        return
+
+    if sub == "mint":
+        if args.mint_url:
+            print(f"  Switching to {args.mint_url}...", end="", flush=True)
+            try:
+                asyncio.run(wallet.set_mint(args.mint_url))
+                print(" done!")
+            except Exception as e:
+                print(f" failed: {e}")
+            return
+        print(f"  Mint: {wallet.mint_url}")
+        return
+
+    if sub == "restore":
+        mnemonic = " ".join(args.words)
+        try:
+            wallet.set_seed_from_mnemonic(mnemonic)
+            if not wallet.active_keyset_id:
+                asyncio.run(wallet.load_mint())
+            wallet.proofs = []
+            restored = asyncio.run(wallet.restore())
+            wallet.save()
+            print(f"  Restored {restored} sats")
+            print(f"  Wallet balance: {wallet.get_balance()} sats")
+        except Exception as e:
+            print(f"Failed: {e}")
+        return
+
+    # Default: show info
+    print(f"  Balance: {wallet.get_balance()} sats")
+    print(f"  Mint:    {wallet.mint_url}")
+    print(f"  Proofs:  {len(wallet.proofs)}")
+    print(f"  Seed:    {'set' if wallet.seed else 'not set'}")
+    print(f"  Backup:  ~/.hermes/routstr/wallet.json")
+
+
+def cmd_balance(args):
+    """Show provider account balance."""
+    import asyncio
+    from hermes_cli.config import get_env_value
+
+    api_key = get_env_value("ROUTSTR_API_KEY") or os.getenv("ROUTSTR_API_KEY", "")
+    node_url = get_env_value("ROUTSTR_NODE_URL") or os.getenv("ROUTSTR_NODE_URL", "")
+
+    if api_key and node_url:
+        try:
+            from hermes_cli.routstr.node_api import get_balance
+            bal = asyncio.run(get_balance(node_url, api_key))
+            print(f"  Node:     {bal['sats']} sats ({bal['total_requests']} requests)")
+            print(f"  Endpoint: {node_url}")
+        except Exception as e:
+            print(f"  Node balance: error ({e})")
+    else:
+        print("  No Routstr node connected.")
+
+    try:
+        from hermes_cli.routstr.wallet import CashuWallet
+        w = CashuWallet()
+        if w.load() and w.get_balance() > 0:
+            print(f"  Wallet:   {w.get_balance()} sats (local)")
+    except Exception:
+        pass
+
+
+def cmd_topup(args):
+    """Fund Cashu wallet via Lightning or Cashu token."""
+    import asyncio
+    import time
+
+    # Check for Cashu token
+    from hermes_cli.routstr.token import extract_token
+    token = extract_token(args.amount_or_token) if args.amount_or_token else None
+    if token:
+        from hermes_cli.routstr.wallet import CashuWallet
+        wallet = CashuWallet()
+        wallet.load()
+        imported = wallet.import_token(token)
+        amount = sum(p.get("amount", 0) for p in imported)
+        print(f"  Received {amount} sats")
+        print(f"  Wallet balance: {wallet.get_balance()} sats")
+        return
+
+    # Lightning funding
+    try:
+        amount_sats = int(args.amount_or_token)
+    except (ValueError, TypeError):
+        print("Usage: hermes topup <sats> or hermes topup <cashu_token>")
+        return
+
+    from hermes_cli.routstr.wallet import CashuWallet
+    wallet = CashuWallet()
+    is_new = not wallet.load()
+    if is_new or not wallet.active_keyset_id:
+        print("  Loading mint...", end="", flush=True)
+        asyncio.run(wallet.load_mint())
+        if not wallet.seed:
+            mnemonic = wallet.generate_mnemonic()
+            wallet.set_seed_from_mnemonic(mnemonic)
+            wallet.save()
+            print(" done!")
+            print(f"\n  Recovery seed: {mnemonic}")
+            print("  Save this — it can recover your wallet.\n")
+        else:
+            print(" done!")
+
+    print(f"  Creating {amount_sats} sat invoice...", end="", flush=True)
+    quote = asyncio.run(wallet.create_funding_invoice(amount_sats))
+    bolt11 = quote.get("request", "")
+    quote_id = quote.get("quote", "")
+    print(" done!")
+    print(f"\n  {bolt11}\n")
+
+    print("  Waiting for payment...", end="", flush=True)
+    paid = False
+    try:
+        for _ in range(90):
+            time.sleep(2)
+            status = asyncio.run(wallet.check_funding_status(quote_id))
+            if status.get("state", "").upper() in ("PAID", "ISSUED"):
+                paid = True
+                break
+            print(".", end="", flush=True)
+    except KeyboardInterrupt:
+        pass
+    if not paid:
+        print(" timed out.")
+        return
+    print(" paid!")
+    asyncio.run(wallet.mint_tokens(amount_sats, quote_id))
+    print(f"  Wallet balance: {wallet.get_balance()} sats")
+
+
+def cmd_nodes(args):
+    """Discover and list Routstr nodes."""
+    import asyncio
+    from hermes_cli.routstr.nostr_discovery import discover_nodes
+    from hermes_cli.config import get_env_value
+
+    print("  Discovering nodes...", end="", flush=True)
+    nodes = asyncio.run(discover_nodes(force_refresh=True))
+    online = [n for n in nodes if n.get("online")]
+    print(f" {len(online)} online\n")
+
+    current = get_env_value("ROUTSTR_NODE_URL") or ""
+    for i, n in enumerate(online):
+        url = n["urls"][0] if n["urls"] else "?"
+        marker = " ← active" if current and current.rstrip("/") == url.rstrip("/") else ""
+        print(f"  [{i+1}] {n['name']} ({url}) — {n.get('model_count', '?')} models{marker}")
+
+    if not online:
+        print("  No online nodes found.")
+
+
+def cmd_withdraw(args):
+    """Withdraw funds from Routstr node back to wallet."""
+    import asyncio
+    from hermes_cli.config import get_env_value, save_env_value
+
+    api_key = get_env_value("ROUTSTR_API_KEY") or os.getenv("ROUTSTR_API_KEY", "")
+    node_url = get_env_value("ROUTSTR_NODE_URL") or os.getenv("ROUTSTR_NODE_URL", "")
+    if not api_key or not node_url:
+        print("  No active Routstr node session.")
+        return
+
+    try:
+        from hermes_cli.routstr.node_api import withdraw
+        from hermes_cli.routstr.wallet import CashuWallet
+
+        token = asyncio.run(withdraw(node_url, api_key))
+        wallet = CashuWallet()
+        wallet.load()
+        imported = wallet.import_token(token)
+        amount = sum(p.get("amount", 0) for p in imported)
+        save_env_value("ROUTSTR_API_KEY", "")
+        print(f"  Withdrawn {amount} sats from {node_url}")
+        print(f"  Wallet balance: {wallet.get_balance()} sats")
+    except Exception as e:
+        print(f"  Failed: {e}")
+
+
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
     _require_tty("model")
@@ -4810,6 +5030,43 @@ For more help on a command:
         help="Disable TLS verification for Nous login (testing only)"
     )
     model_parser.set_defaults(func=cmd_model)
+
+    # =========================================================================
+    # wallet command
+    # =========================================================================
+    wallet_parser = subparsers.add_parser(
+        "wallet", help="Cashu wallet management (Routstr)",
+        description="Manage your Cashu eCash wallet for Routstr"
+    )
+    wallet_sub = wallet_parser.add_subparsers(dest="wallet_cmd")
+    _ws = wallet_sub.add_parser("send", help="Export sats as Cashu token")
+    _ws.add_argument("amount", type=int, help="Amount in sats")
+    _ws.add_argument("--v3", action="store_true", help="Use V3 (cashuA) format")
+    _ws.add_argument("--uri", action="store_true", help="Add cashu: URI prefix")
+    _wr = wallet_sub.add_parser("receive", help="Redeem a Cashu token")
+    _wr.add_argument("token", help="Cashu token (cashuA... or cashuB...)")
+    _wm = wallet_sub.add_parser("mint", help="Show or change Cashu mint")
+    _wm.add_argument("mint_url", nargs="?", help="New mint URL")
+    _wrest = wallet_sub.add_parser("restore", help="Recover wallet from seed phrase")
+    _wrest.add_argument("words", nargs="+", help="12-word mnemonic")
+    wallet_parser.set_defaults(func=cmd_wallet)
+
+    # balance command
+    balance_parser = subparsers.add_parser("balance", help="Show provider account balance")
+    balance_parser.set_defaults(func=cmd_balance)
+
+    # topup command
+    topup_parser = subparsers.add_parser("topup", help="Fund wallet via Lightning or Cashu token")
+    topup_parser.add_argument("amount_or_token", nargs="?", help="Amount in sats or Cashu token")
+    topup_parser.set_defaults(func=cmd_topup)
+
+    # nodes command
+    nodes_parser = subparsers.add_parser("nodes", help="Discover Routstr nodes")
+    nodes_parser.set_defaults(func=cmd_nodes)
+
+    # withdraw command
+    withdraw_parser = subparsers.add_parser("withdraw", help="Withdraw from Routstr node to wallet")
+    withdraw_parser.set_defaults(func=cmd_withdraw)
 
     # =========================================================================
     # gateway command
