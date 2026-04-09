@@ -2474,6 +2474,9 @@ class GatewayRunner:
         if canonical == "withdraw":
             return await self._handle_withdraw_command(event)
 
+        if canonical == "receive":
+            return await self._handle_receive_command(event)
+
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
@@ -5006,6 +5009,31 @@ class GatewayRunner:
             )
         except Exception as e:
             return f"❌ Withdraw failed: {e}"
+
+    async def _handle_receive_command(self, event: MessageEvent) -> str:
+        """Handle /receive <token> — redeem a Cashu token into wallet."""
+        token_str = event.get_command_args().strip()
+        if not token_str:
+            return "Usage: `/receive cashuA...` or `/receive cashu:cashuB...`"
+
+        try:
+            from hermes_cli.routstr.token import strip_uri_prefix
+            from hermes_cli.routstr.wallet import CashuWallet
+
+            token_str = strip_uri_prefix(token_str)
+            if not token_str.startswith("cashuA") and not token_str.startswith("cashuB"):
+                return "Invalid token — must start with `cashuA`, `cashuB`, or `cashu:`"
+
+            wallet = CashuWallet()
+            wallet.load()
+            imported = wallet.import_token(token_str)
+            amount = sum(p.get("amount", 0) for p in imported)
+            return (
+                f"✅ **Received {amount} sats!**\n\n"
+                f"Wallet balance: {wallet.get_balance()} sats"
+            )
+        except Exception as e:
+            return f"Failed to import token: {e}"
 
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
