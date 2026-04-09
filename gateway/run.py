@@ -4756,6 +4756,105 @@ class GatewayRunner:
                     "This will query the mint for previously-minted proofs."
                 )
 
+            # /wallet send <sats> — export as Cashu token
+            if args.startswith("send"):
+                parts = args.split()
+                if len(parts) < 2:
+                    return "Usage: `/wallet send <sats>` — export as Cashu token"
+                try:
+                    send_amount = int(parts[1])
+                except ValueError:
+                    return f"Invalid amount: `{parts[1]}`"
+                balance = wallet.get_balance()
+                if send_amount > balance:
+                    return f"Insufficient balance: {balance} sats"
+                if send_amount < 1:
+                    return "Amount must be at least 1 sat."
+                try:
+                    keep, send = await wallet.send(send_amount)
+                    from hermes_cli.routstr.token import encode_token
+                    token = encode_token(wallet.mint_url, send)
+                    return (
+                        f"📤 **Cashu Token ({send_amount} sats)**\n\n"
+                        f"`{token}`\n\n"
+                        f"Send this to anyone — they can redeem it in any Cashu wallet.\n"
+                        f"Wallet remaining: {wallet.get_balance()} sats"
+                    )
+                except Exception as e:
+                    return f"Failed to create token: {e}"
+
+            # /wallet pay <bolt11 or amount address> — pay Lightning invoice
+            if args.startswith("pay"):
+                parts = args.split(None, 2)
+                if len(parts) < 2:
+                    return (
+                        "Usage:\n"
+                        "`/wallet pay lnbc...` — pay a Lightning invoice\n"
+                        "`/wallet pay 1000 user@domain` — pay a Lightning address"
+                    )
+                bolt11 = ""
+                if parts[1].startswith("lnbc"):
+                    bolt11 = parts[1]
+                elif len(parts) >= 3:
+                    # /wallet pay <amount> <address> — resolve LNURL
+                    try:
+                        pay_amount = int(parts[1])
+                        ln_address = parts[2]
+                    except ValueError:
+                        return f"Invalid amount: `{parts[1]}`"
+                    # Resolve Lightning address to bolt11
+                    try:
+                        import httpx
+                        user, domain = ln_address.split("@")
+                        async with httpx.AsyncClient() as client:
+                            resp = await client.get(
+                                f"https://{domain}/.well-known/lnurlp/{user}",
+                                timeout=10.0,
+                            )
+                            resp.raise_for_status()
+                            lnurl_data = resp.json()
+                            callback = lnurl_data["callback"]
+                            resp2 = await client.get(
+                                callback, params={"amount": pay_amount * 1000},  # msats
+                                timeout=10.0,
+                            )
+                            resp2.raise_for_status()
+                            bolt11 = resp2.json().get("pr", "")
+                    except Exception as e:
+                        return f"Failed to resolve Lightning address: {e}"
+                else:
+                    return "Provide a Lightning invoice (`lnbc...`) or `<amount> <address>`"
+
+                if not bolt11:
+                    return "Could not get Lightning invoice."
+
+                balance = wallet.get_balance()
+                try:
+                    quote = await wallet.create_melt_quote(bolt11)
+                    needed = quote.get("amount", 0) + quote.get("fee_reserve", 0)
+                    if needed > balance:
+                        return f"Insufficient balance: need {needed} sats (incl. {quote.get('fee_reserve', 0)} fee), have {balance}"
+
+                    keep, send = await wallet.send(needed)
+                    result = await wallet.melt_tokens(quote["quote"], send)
+
+                    state = result.get("state", "").upper()
+                    # Handle change proofs (fee refund)
+                    change = result.get("change", [])
+                    if change:
+                        wallet.proofs.extend(change)
+                        wallet.save()
+
+                    if state in ("PAID", "PENDING"):
+                        return (
+                            f"⚡ **Payment sent!**\n\n"
+                            f"Amount: {quote.get('amount', '?')} sats + {quote.get('fee_reserve', 0)} fee\n"
+                            f"Wallet remaining: {wallet.get_balance()} sats"
+                        )
+                    return f"Payment state: {state}"
+                except Exception as e:
+                    return f"Payment failed: {e}"
+
             # /wallet mint <url> — change mint
             if args.startswith("mint "):
                 new_mint = args[5:].strip().rstrip("/")
@@ -4803,6 +4902,9 @@ class GatewayRunner:
                 "",
                 f"**Seed:** {'✅ set (recoverable)' if wallet.seed else '❌ not set'}",
                 "",
+                "`/wallet send <sats>` — export as Cashu token",
+                "`/wallet pay <invoice>` — pay Lightning invoice",
+                "`/wallet pay <sats> <user@domain>` — pay Lightning address",
                 "`/wallet mint` — show/change mint",
                 "`/wallet restore <12 words>` — recover from seed",
                 "`/topup [sats]` — add funds | `/balance` — node balance",
