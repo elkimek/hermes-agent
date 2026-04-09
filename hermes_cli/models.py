@@ -269,6 +269,21 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2.5",
         "MiniMax-M2.5",
     ],
+    "routstr": [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
+        "deepseek-v3.2",
+        "grok-4.1-fast",
+        "glm-5",
+        "kimi-k2.5",
+        "minimax-m27",
+        "qwen3.5-397b-a17b",
+        "qwen3-coder-480b-a35b-instruct",
+    ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B",
@@ -492,6 +507,7 @@ _PROVIDER_LABELS = {
     "alibaba": "Alibaba Cloud (DashScope)",
     "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
+    "routstr": "Routstr",
     "custom": "Custom endpoint",
 }
 
@@ -534,6 +550,8 @@ _PROVIDER_ALIASES = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+    "routstr-ai": "routstr",
+    "bitcoin-ai": "routstr",
 }
 
 
@@ -1195,6 +1213,12 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = _fetch_ai_gateway_models()
         if live:
             return live
+    if normalized == "routstr":
+        node_url = os.getenv("ROUTSTR_NODE_URL", "").strip().rstrip("/")
+        if node_url:
+            live = fetch_api_models(None, node_url + "/v1")
+            if live:
+                return live
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:
