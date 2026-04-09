@@ -625,7 +625,7 @@ class CashuWallet:
     # ── Token operations ────────────────────────────────────────────────
 
     def export_token(self, amount: Optional[int] = None) -> str:
-        """Export proofs as a cashuA token string.
+        """Export proofs as a Cashu token string (cashuB/V4 by default).
 
         If amount is None, exports all proofs.
         """

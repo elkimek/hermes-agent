@@ -151,6 +151,39 @@ class TestSumProofs:
         assert sum_proofs([{"id": "x"}]) == 0
 
 
+class TestExtractToken:
+    def test_extract_from_plain_text(self):
+        from hermes_cli.routstr.token import extract_token
+        assert extract_token("cashuBabc123def") == "cashuBabc123def"
+
+    def test_extract_from_surrounding_text(self):
+        from hermes_cli.routstr.token import extract_token
+        result = extract_token("here is the token cashuBabc123XYZ and some other text")
+        assert result == "cashuBabc123XYZ"
+
+    def test_extract_with_cashu_prefix(self):
+        from hermes_cli.routstr.token import extract_token
+        assert extract_token("cashu:cashuBabc123") == "cashuBabc123"
+
+    def test_extract_from_discord_message_txt(self):
+        from hermes_cli.routstr.token import extract_token
+        discord = "[Content of message.txt]:\ncashuBeyJwcm9vZiI6W10sInVuaXQiOiJzYXQifQ"
+        result = extract_token(discord)
+        assert result.startswith("cashuB")
+
+    def test_extract_cashuA(self):
+        from hermes_cli.routstr.token import extract_token
+        assert extract_token("cashuAeyJhYmMi").startswith("cashuA")
+
+    def test_no_token_returns_none(self):
+        from hermes_cli.routstr.token import extract_token
+        assert extract_token("just some regular text") is None
+
+    def test_empty_string(self):
+        from hermes_cli.routstr.token import extract_token
+        assert extract_token("") is None
+
+
 class TestStripPrefix:
     def test_strips_cashu_prefix(self):
         from hermes_cli.routstr.token import strip_uri_prefix
