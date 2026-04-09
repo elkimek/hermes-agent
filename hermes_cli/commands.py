@@ -96,7 +96,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--global]"),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
-
+    CommandDef("topup", "Top up PPQ balance via Lightning/BTC/XMR/LTC",
+               "Configuration", args_hint="[amount]", gateway_only=True),
+    CommandDef("balance", "Show PPQ account balance",
+               "Configuration", gateway_only=True),
+    CommandDef("prompt", "View/set custom system prompt", "Configuration",
+               cli_only=True, args_hint="[text]", subcommands=("clear",)),
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
     CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",

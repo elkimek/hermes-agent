@@ -2458,6 +2458,12 @@ class GatewayRunner:
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
+
+        if canonical == "topup":
+            return await self._handle_topup_command(event)
+
+        if canonical == "balance":
+            return await self._handle_balance_command(event)
         
         if canonical == "personality":
             return await self._handle_personality_command(event)
@@ -4292,7 +4298,100 @@ class GatewayRunner:
         lines.append("Switch: `/model provider:model-name`")
         lines.append("Setup: `hermes setup`")
         return "\n".join(lines)
-    
+
+    async def _handle_balance_command(self, event: MessageEvent) -> str:
+        """Handle /balance command — show PPQ account balance."""
+        from hermes_cli.config import get_env_value
+        api_key = get_env_value("PPQ_API_KEY") or os.getenv("PPQ_API_KEY", "")
+        if not api_key:
+            return "No PPQ API key configured. Set `PPQ_API_KEY` or run `hermes model` to create an account."
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    "https://api.ppq.ai/credits/balance",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={}, timeout=5.0,
+                )
+            if resp.status_code == 200:
+                balance = resp.json().get("balance")
+                if balance is not None:
+                    return f"💰 **PPQ Balance:** ${float(balance):.2f}\n\nTop up: `/topup [amount]`"
+            return "Failed to fetch balance."
+        except Exception as e:
+            return f"Failed to fetch balance: {e}"
+
+    async def _handle_topup_command(self, event: MessageEvent) -> str:
+        """Handle /topup command — create a Lightning invoice for PPQ top-up.
+
+        Usage:
+            /topup          — default $1 via Lightning
+            /topup 5        — $5 via Lightning
+            /topup 10 btc   — $10 via Bitcoin
+        """
+        from hermes_cli.config import get_env_value
+        api_key = get_env_value("PPQ_API_KEY") or os.getenv("PPQ_API_KEY", "")
+        if not api_key:
+            return "No PPQ API key configured. Set `PPQ_API_KEY` or run `hermes model` to create an account."
+
+        args = event.get_command_args().strip().split()
+        amount = 1.0
+        method = "btc-lightning"
+        _method_aliases = {
+            "lightning": "btc-lightning",
+            "bitcoin": "btc",
+            "monero": "xmr",
+            "litecoin": "ltc",
+        }
+        _method_labels = {
+            "btc-lightning": "Lightning",
+            "btc": "Bitcoin",
+            "xmr": "Monero",
+            "ltc": "Litecoin",
+        }
+
+        if args:
+            try:
+                amount = float(args[0])
+            except ValueError:
+                return f"Invalid amount: `{args[0]}`. Usage: `/topup [amount] [lightning|btc|xmr|ltc]`"
+        if len(args) >= 2:
+            raw_method = args[1].lower()
+            method = _method_aliases.get(raw_method, raw_method)
+
+        method_label = _method_labels.get(method, method)
+
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"https://api.ppq.ai/topup/create/{method}",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"amount": amount, "currency": "USD"},
+                    timeout=15.0,
+                )
+                resp.raise_for_status()
+                result = resp.json()
+        except Exception as e:
+            return f"Failed to create invoice: {e}"
+
+        checkout_url = result.get("checkout_url", "")
+        lightning_invoice = result.get("lightning_invoice", "")
+
+        lines = [f"⚡ **PPQ Top-Up: ${amount:.2f} via {method_label}**", ""]
+
+        if checkout_url:
+            lines.append(f"🔗 **Pay here:** {checkout_url}")
+            lines.append("")
+
+        if lightning_invoice:
+            lines.append(f"📋 **Lightning invoice:**")
+            lines.append(f"`{lightning_invoice}`")
+            lines.append("")
+
+        lines.append("Check status: `/balance`")
+        return "\n".join(lines)
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         import yaml
