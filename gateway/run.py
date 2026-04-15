@@ -2810,6 +2810,20 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
+            # Session-level toggles (/yolo, /verbose, /fast, /reasoning) must
+            # bypass the running-agent interrupt path — they modify session
+            # state without needing agent interaction and should never be
+            # queued as pending text (which the safety net would discard).
+            if _cmd_def_inner and _cmd_def_inner.name in ("yolo", "verbose", "fast", "reasoning"):
+                if _cmd_def_inner.name == "yolo":
+                    return await self._handle_yolo_command(event)
+                if _cmd_def_inner.name == "verbose":
+                    return await self._handle_verbose_command(event)
+                if _cmd_def_inner.name == "fast":
+                    return await self._handle_fast_command(event)
+                if _cmd_def_inner.name == "reasoning":
+                    return await self._handle_reasoning_command(event)
+
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
                 adapter = self.adapters.get(source.platform)
